@@ -1,0 +1,22 @@
+name: Weekly Training Review
+
+on:
+  schedule:
+    - cron: '0 9 * * 0'       # 09:00 UTC Sunday = ~19:00 Melbourne Sunday
+  workflow_dispatch:           # allows manual runs from the Actions tab
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt
+      - run: python coach.py --mode weekly
+        env:
+          INTERVALS_ATHLETE_ID: ${{ secrets.INTERVALS_ATHLETE_ID }}
+          INTERVALS_API_KEY:    ${{ secrets.INTERVALS_API_KEY }}
+          ANTHROPIC_API_KEY:    ${{ secrets.ANTHROPIC_API_KEY }}
+          CRAFT_API_BASE:       ${{ secrets.CRAFT_API_BASE }}
