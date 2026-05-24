@@ -1,0 +1,89 @@
+{
+  "_note": "Curated historical milestones extracted from training history (May 2020 - Apr 2026). Seeds the Events and Records sections on first run. Append-only thereafter.",
+  "records": {
+    "run_5k": [
+      {"date": "2022-02-19", "time": "21:02", "where": "First Parkrun, Princes"},
+      {"date": "2022-10-24", "time": "20:37", "where": "Princes 5K, 41st/380"},
+      {"date": "2022-12-26", "time": "19:56", "where": "Princes, first sub-20"},
+      {"date": "2023-04-24", "time": "19:23", "where": "Mornington 5K"},
+      {"date": "2024-10-20", "time": "19:14", "where": "Albert Parkrun"},
+      {"date": "2025-01-27", "time": "18:15", "where": "5K TT"},
+      {"date": "2025-05-05", "time": "18:05", "where": "5K TT Race"}
+    ],
+    "run_10k": [
+      {"date": "2022-07-18", "time": "44:53", "where": "RunMelbourne"},
+      {"date": "2023-07-10", "time": "43:17", "where": "RunMelbourne (split in HM)"},
+      {"date": "2024-04-22", "time": "42:24", "where": "Mornington 10K"},
+      {"date": "2025-02-10", "time": "40:02", "where": "Carman's Fun Run (split in HM)"}
+    ],
+    "run_21_1k": [
+      {"date": "2022-05-23", "time": "1:36:27", "where": "Mansfield Half Marathon"},
+      {"date": "2023-07-10", "time": "1:33:23", "where": "RunMelbourne"},
+      {"date": "2024-07-15", "time": "1:31:42", "where": "RunMelbourne"},
+      {"date": "2025-02-10", "time": "1:26:40", "where": "Carman's Fun Run"}
+    ],
+    "run_42_2k": [
+      {"date": "2023-06-26", "time": "3:51:00", "where": "Gold Coast Marathon (first, approx from 231 min)"},
+      {"date": "2025-04-21", "time": "3:18:31", "where": "Ballarat Marathon"}
+    ],
+    "ftp_watts": [
+      {"date": "2024-12-09", "watts": 184},
+      {"date": "2025-03-03", "watts": 196, "note": "ramp test"},
+      {"date": "2025-05-19", "watts": 201, "note": "ramp test"},
+      {"date": "2025-10-27", "watts": 198},
+      {"date": "2025-12-08", "watts": 210},
+      {"date": "2025-12-22", "watts": 231, "note": "first outdoor FTP"},
+      {"date": "2026-02-02", "watts": 231},
+      {"date": "2026-03-09", "watts": 246, "note": "current"}
+    ]
+  },
+  "events": [
+    {"date": "2020-05-25", "sport": "run", "name": "First recorded run", "detail": {"km": 1.42, "minutes": 11, "note": "Start of the endurance journey"}},
+    {"date": "2020-05-25", "sport": "run", "name": "First 5km run", "detail": {"km": 5.03, "minutes": 34}},
+    {"date": "2020-10-26", "sport": "run", "name": "First 10km run", "detail": {"km": 10.04, "minutes": 57}},
+    {"date": "2020-12-31", "sport": "run", "name": "5km TT Race", "detail": {"km": 5.01, "minutes": 23, "type": "race"}},
+    {"date": "2022-02-07", "sport": "run", "name": "First half-marathon distance run", "detail": {"km": 21.13, "minutes": 112}},
+    {"date": "2022-02-19", "sport": "run", "name": "First Parkrun (Princes)", "detail": {"km": 5.05, "time": "21:02", "type": "race", "note": "5K PB"}},
+    {"date": "2022-03-28", "sport": "run", "name": "Monash Fun Run", "detail": {"km": 5.51, "type": "race", "note": "4th place"}},
+    {"date": "2022-05-23", "sport": "run", "name": "Mansfield Half Marathon", "detail": {"km": 21.11, "time": "1:36:27", "type": "race", "note": "HM PB"}},
+    {"date": "2022-07-18", "sport": "run", "name": "RunMelbourne 10K", "detail": {"km": 10.15, "time": "44:53", "type": "race", "note": "10K PB"}},
+    {"date": "2022-10-24", "sport": "run", "name": "Princes 5K", "detail": {"km": 5.06, "time": "20:37", "type": "race", "note": "5K PB"}},
+    {"date": "2022-12-26", "sport": "run", "name": "Princes 5K", "detail": {"km": 5.03, "time": "19:56", "type": "race", "note": "First sub-20 5K"}},
+    {"date": "2023-04-24", "sport": "run", "name": "Mornington 5K", "detail": {"km": 5.03, "time": "19:23", "type": "race", "note": "5K PB"}},
+    {"date": "2023-05-01", "sport": "run", "name": "Wings for Life", "detail": {"km": 30.34, "minutes": 149, "type": "race"}},
+    {"date": "2023-06-26", "sport": "run", "name": "Gold Coast Marathon - FIRST MARATHON", "detail": {"km": 42.6, "minutes": 231, "type": "race", "note": "First marathon"}},
+    {"date": "2023-07-10", "sport": "run", "name": "RunMelbourne Half Marathon", "detail": {"km": 21.15, "time": "1:33:23", "type": "race", "note": "HM PB; 10K split 43:17 (10K PB)"}},
+    {"date": "2024-03-11", "sport": "run", "name": "Run for the Kids", "detail": {"km": 4.73, "minutes": 43, "type": "race"}},
+    {"date": "2024-04-22", "sport": "run", "name": "Mornington 10K", "detail": {"km": 10.14, "time": "42:24", "type": "race", "note": "10K PB"}},
+    {"date": "2024-05-13", "sport": "run", "name": "Great Ocean Road", "detail": {"km": 13.49, "minutes": 118, "type": "race"}},
+    {"date": "2024-07-15", "sport": "run", "name": "RunMelbourne Half Marathon", "detail": {"km": 21.14, "time": "1:31:42", "type": "race", "note": "HM PB"}},
+    {"date": "2024-09-23", "sport": "run", "name": "65km ultra-distance training run", "detail": {"km": 65.27, "minutes": 488}},
+    {"date": "2024-10-20", "sport": "run", "name": "Albert Parkrun", "detail": {"km": 5.07, "time": "19:14", "type": "race", "note": "5K PB"}},
+    {"date": "2024-11-04", "sport": "triathlon", "name": "IRONMAN 70.3 - FIRST 70.3", "detail": {"type": "race", "note": "First 70.3", "swim_km": 1.816, "swim_min": 44, "bike_km": 89.95, "bike_min": 180, "run_km": 21.22, "run_min": 105}},
+    {"date": "2025-01-20", "sport": "swim", "name": "Great Kieser swim race", "detail": {"km": 2.284, "minutes": 60, "type": "race"}},
+    {"date": "2025-01-27", "sport": "run", "name": "5km TT", "detail": {"km": 5.0, "time": "18:15", "type": "race", "note": "5K PB"}},
+    {"date": "2025-02-10", "sport": "run", "name": "Carman's Fun Run Half Marathon", "detail": {"km": 21.52, "time": "1:26:40", "type": "race", "note": "HM PB; 10K split 40:02 (10K PB)"}},
+    {"date": "2025-03-17", "sport": "triathlon", "name": "IRONMAN 70.3 Geelong", "detail": {"type": "race", "overall": "5:54:10", "swim_km": 1.816, "swim_min": 43, "bike_km": 89.72, "bike_min": 191, "run_km": 21.15, "run_min": 108}},
+    {"date": "2025-03-31", "sport": "run", "name": "Run for the Kids", "detail": {"km": 14.71, "time": "57:09", "type": "race"}},
+    {"date": "2025-04-21", "sport": "run", "name": "Ballarat Marathon", "detail": {"km": 42.87, "time": "3:18:31", "type": "race", "note": "Marathon PB, 32 min improvement"}},
+    {"date": "2025-05-05", "sport": "run", "name": "5km TT Race", "detail": {"km": 5.02, "time": "18:05", "type": "race", "note": "5K PB"}},
+    {"date": "2025-05-19", "sport": "swim", "name": "Long swim 4.2km", "detail": {"km": 4.2, "minutes": 121}},
+    {"date": "2025-06-02", "sport": "swim", "name": "Long swim 4.2km", "detail": {"km": 4.2, "minutes": 130}},
+    {"date": "2025-06-16", "sport": "swim", "name": "Long swim 4.1km", "detail": {"km": 4.1, "minutes": 107}},
+    {"date": "2025-07-07", "sport": "triathlon", "name": "IRONMAN Vitoria-Gasteiz - FIRST FULL IRONMAN", "detail": {"type": "race", "note": "First full IRONMAN", "swim_km": 3.84, "swim_min": 93, "bike_km": 179.63, "bike_min": 457, "run_km": 41.68, "run_min": 249}},
+    {"date": "2025-07-28", "sport": "run", "name": "Albert Parkrun", "detail": {"km": 5.07, "time": "19:04", "type": "race"}},
+    {"date": "2025-08-25", "sport": "run", "name": "Brighton Beach Marathon", "detail": {"km": 42.58, "minutes": 238, "type": "race"}},
+    {"date": "2025-10-06", "sport": "run", "name": "Melbourne Marathon", "detail": {"km": 42.84, "minutes": 292, "type": "race"}},
+    {"date": "2025-10-20", "sport": "ride", "name": "Around the Bay 50k", "detail": {"km": 50.54, "minutes": 191, "type": "race"}},
+    {"date": "2026-03-16", "sport": "triathlon", "name": "IRONMAN 70.3 Geelong", "detail": {"type": "race", "swim_km": 1.831, "swim_min": 43, "bike_km": 90.11, "bike_min": 185, "run_km": 21.21, "run_min": 116}},
+    {"date": "2026-03-30", "sport": "run", "name": "First Cross Country race", "detail": {"km": 6.26, "minutes": 68, "type": "race", "note": "First XC"}},
+    {"date": "2024-12-09", "sport": "ride", "name": "FTP Test", "detail": {"type": "ftp_test", "ftp_watts": 184}},
+    {"date": "2025-03-03", "sport": "ride", "name": "FTP Ramp Test", "detail": {"type": "ftp_test", "ftp_watts": 196}},
+    {"date": "2025-05-19", "sport": "ride", "name": "FTP Ramp Test", "detail": {"type": "ftp_test", "ftp_watts": 201}},
+    {"date": "2025-10-27", "sport": "ride", "name": "FTP Test", "detail": {"type": "ftp_test", "ftp_watts": 198}},
+    {"date": "2025-12-08", "sport": "ride", "name": "FTP Test", "detail": {"type": "ftp_test", "ftp_watts": 210}},
+    {"date": "2025-12-22", "sport": "ride", "name": "FTP Test (first outdoor)", "detail": {"type": "ftp_test", "ftp_watts": 231}},
+    {"date": "2026-02-02", "sport": "ride", "name": "FTP Test", "detail": {"type": "ftp_test", "ftp_watts": 231}},
+    {"date": "2026-03-09", "sport": "ride", "name": "FTP PB", "detail": {"type": "ftp_test", "ftp_watts": 246}}
+  ]
+}
