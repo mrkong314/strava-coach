@@ -5,22 +5,27 @@ coach.py - Intervals.icu -> Craft training data pipeline.
 Pure data sync. No LLM in the pipeline; all analysis happens in chat.
 
 Modes:
-  sync     Refresh the Detail section (last 90 days of activities + wellness).
+  sync     Refresh the detail data (last 90 days of activities + wellness).
            Run every 30 min. On first run, if the Training Log has no managed
-           sections, it creates the four-section structure and seeds Events
-           and Records from history_seed.json.
-  rollup   Append last week's summary block, plus any new events detected in
-           that week. Run weekly on Monday.
+           blocks, it seeds Events and Records from history_seed.json.
+  rollup   Append last week's summary, plus any new events detected that week.
+           Run weekly on Monday.
 
-The Craft Training Log is one document holding four managed blocks, each a
-fenced JSON object identified by its "_section" key:
-  detail   - rolling 90-day window, overwritten every sync
-  weekly   - append-only, one entry per completed week
-  records  - append-only PB / FTP progression
+Craft caps a single block at 10,000 characters, so each logical section is
+stored across as many sub-blocks as needed. Every managed block is a fenced
+JSON object carrying:
+  _section : detail_activity | detail_wellness | weekly | records | events
+  _part    : 0-based index of this block within its section
+  items    : a slice of that section's list
+
+Sections:
+  detail_activity / detail_wellness  - rolling 90-day window, rewritten each sync
+  weekly   - append-only, one item per completed week
+  records  - PB / FTP progression (seeded once)
   events   - append-only milestone races and key sessions
 
-Note: per-interval / lap detail is not yet captured. It will be added in a
-follow-up version with compact trimming and multi-block storage.
+Per-interval / lap detail is not yet captured; it will be added in a follow-up
+with compact trimming.
 
 Environment variables (GitHub Actions secrets):
   INTERVALS_ATHLETE_ID   e.g. i588094
@@ -46,16 +51,18 @@ CRAFT_API_BASE       = os.environ["CRAFT_API_BASE"].rstrip("/")
 
 INTERVALS_BASE = "https://intervals.icu/api/v1"
 
-# Melbourne is UTC+10 (AEST) / UTC+11 (AEDT). +10 is fine for the local date
-# because the jobs never run near local midnight.
 MELBOURNE = dt.timezone(dt.timedelta(hours=10))
 
-DETAIL_DAYS = 90    # rolling detail window
+DETAIL_DAYS = 90
+
+# Craft caps a block at 10,000 chars. Budget the items payload well under that
+# to leave room for the JSON wrapper and code fences.
+JSON_BUDGET = 8500
 
 # Event detection thresholds
-RUN_EVENT_KM   = 40    # runs at/near marathon distance and beyond
-RIDE_EVENT_KM  = 200   # long rides
-SWIM_EVENT_KM  = 4     # long swims
+RUN_EVENT_KM   = 40
+RIDE_EVENT_KM  = 200
+SWIM_EVENT_KM  = 4
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SEED_FILE = os.path.join(HERE, "history_seed.json")
@@ -92,8 +99,6 @@ def fetch_wellness(oldest, newest):
         {"oldest": oldest.isoformat(), "newest": newest.isoformat()},
     )
 
-
-# --- field trimming -------------------------------------------------------
 
 ACT_FIELDS = ["id", "start_date_local", "type", "name", "moving_time",
               "distance", "total_elevation_gain", "icu_training_load",
@@ -158,14 +163,13 @@ def craft_post(markdown, doc_id, position="end"):
     return r.json()
 
 
-def craft_put(block_id, markdown):
-    r = requests.put(
-        f"{CRAFT_API_BASE}/blocks",
-        json={"blocks": [{"id": block_id, "markdown": markdown}]},
-        timeout=60,
-    )
+def craft_delete(block_ids):
+    ids = [x for x in block_ids if x]
+    if not ids:
+        return
+    r = requests.delete(f"{CRAFT_API_BASE}/blocks",
+                        json={"blockIds": ids}, timeout=60)
     r.raise_for_status()
-    return r.json()
 
 
 def _walk(node, out):
@@ -195,27 +199,54 @@ def _extract_json(markdown):
         return None
 
 
-def section_block(section, doc_id, blocks):
-    """Return (block_id, data) for a managed section, or (None, None)."""
+def has_managed(blocks):
+    return any((_extract_json(b.get("markdown", "")) or {}).get("_section")
+               for b in blocks)
+
+
+def read_section(section, blocks):
+    """Collect every item of a section across its sub-blocks, in order."""
+    parts = []
     for b in blocks:
-        data = _extract_json(b.get("markdown", ""))
-        if data and data.get("_section") == section:
-            return b.get("id"), data
-    return None, None
+        d = _extract_json(b.get("markdown", ""))
+        if d and d.get("_section") == section:
+            parts.append((d.get("_part", 0), d.get("items", []) or []))
+    parts.sort(key=lambda x: x[0])
+    out = []
+    for _, items in parts:
+        out.extend(items)
+    return out
 
 
-def write_section(section, payload, doc_id, block_id=None):
-    """Create or overwrite a managed section block as fenced JSON."""
-    payload = dict(payload)
-    payload["_section"] = section
-    payload["_updated"] = dt.datetime.now(MELBOURNE).isoformat(
-        timespec="seconds")
-    markdown = "```json\n" + json.dumps(payload, separators=(",", ":")) + "\n```"
-    if block_id:
-        craft_put(block_id, markdown)
-    else:
-        craft_post(f"## {section.upper()}", doc_id, position="end")
-        craft_post(markdown, doc_id, position="end")
+def _chunk_items(items):
+    """Split a list into chunks whose JSON stays under JSON_BUDGET chars."""
+    chunks, cur, cur_len = [], [], 0
+    for it in items:
+        size = len(json.dumps(it, separators=(",", ":")))
+        if cur and cur_len + size + 1 > JSON_BUDGET:
+            chunks.append(cur)
+            cur, cur_len = [], 0
+        cur.append(it)
+        cur_len += size + 1
+    if cur or not chunks:
+        chunks.append(cur)
+    return chunks
+
+
+def write_section(section, items, doc_id, blocks):
+    """Delete a section's existing sub-blocks and write it fresh, chunked."""
+    old_ids = [b.get("id") for b in blocks
+               if (_extract_json(b.get("markdown", "")) or {}).get("_section")
+               == section]
+    craft_delete(old_ids)
+    stamp = dt.datetime.now(MELBOURNE).isoformat(timespec="seconds")
+    for i, chunk in enumerate(_chunk_items(list(items))):
+        payload = {"_section": section, "_part": i,
+                   "_updated": stamp, "items": chunk}
+        markdown = ("```json\n"
+                    + json.dumps(payload, separators=(",", ":"))
+                    + "\n```")
+        craft_post(markdown, doc_id)
 
 
 # --------------------------------------------------------------------------
@@ -223,21 +254,27 @@ def write_section(section, payload, doc_id, block_id=None):
 # --------------------------------------------------------------------------
 
 def ensure_structure(doc_id, blocks):
-    """Create the four sections if none exist. Returns True if it scaffolded."""
-    has_any = any(_extract_json(b.get("markdown", "")) for b in blocks)
-    if has_any:
+    """Seed Events and Records if the document has no managed blocks."""
+    if has_managed(blocks):
         return False
 
-    print("No managed sections found. Creating structure and seeding history.")
+    print("No managed sections found. Seeding history.")
     seed = {"events": [], "records": {}}
     if os.path.exists(SEED_FILE):
         with open(SEED_FILE) as f:
             seed = json.load(f)
 
-    write_section("detail",  {"wellness": [], "activities": []}, doc_id)
-    write_section("weekly",  {"items": []}, doc_id)
-    write_section("records", {"items": seed.get("records", {})}, doc_id)
-    write_section("events",  {"items": seed.get("events", [])}, doc_id)
+    # flatten the records dict into a list of {category, ...} items
+    rec_items = []
+    for category, entries in (seed.get("records") or {}).items():
+        for r in entries:
+            row = {"category": category}
+            row.update(r)
+            rec_items.append(row)
+
+    write_section("events", seed.get("events", []), doc_id, blocks)
+    write_section("records", rec_items, doc_id, blocks)
+    write_section("weekly", [], doc_id, blocks)
     return True
 
 
@@ -257,15 +294,11 @@ def run_sync():
     today = today_mel()
     oldest = today - dt.timedelta(days=DETAIL_DAYS)
 
-    activities = [trim_activity(a)
-                  for a in fetch_activities(oldest, today)]
-    wellness = [trim_wellness(w)
-                for w in fetch_wellness(oldest, today)]
+    activities = [trim_activity(a) for a in fetch_activities(oldest, today)]
+    wellness = [trim_wellness(w) for w in fetch_wellness(oldest, today)]
 
-    det_id, _ = section_block("detail", doc_id, blocks)
-    payload = {"window_days": DETAIL_DAYS, "wellness": wellness,
-               "activities": activities}
-    write_section("detail", payload, doc_id, block_id=det_id)
+    write_section("detail_activity", activities, doc_id, blocks)
+    write_section("detail_wellness", wellness, doc_id, blocks)
     print(f"Sync complete: {len(activities)} activities, "
           f"{len(wellness)} wellness records.")
 
@@ -288,7 +321,6 @@ def _sport_group(act_type):
 
 
 def _detect_events(activities):
-    """Return event dicts for activities crossing milestone thresholds."""
     found = []
     for a in activities:
         name = a.get("name") or ""
@@ -335,7 +367,6 @@ def run_rollup():
     acts = [trim_activity(a) for a in fetch_activities(week_start, week_end)]
     wel = [trim_wellness(w) for w in fetch_wellness(week_start, week_end)]
 
-    # per-sport totals
     sports = {}
     for a in acts:
         g = _sport_group(a.get("type"))
@@ -376,21 +407,17 @@ def run_rollup():
         "events_this_week": [e["name"] for e in _detect_events(acts)],
     }
 
-    # append weekly entry
-    wk_id, wk_data = section_block("weekly", doc_id, blocks)
-    items = (wk_data or {}).get("items", [])
-    items.append(week_entry)
-    write_section("weekly", {"items": items}, doc_id, block_id=wk_id)
+    weekly = read_section("weekly", blocks)
+    weekly.append(week_entry)
+    write_section("weekly", weekly, doc_id, blocks)
 
-    # append new events (dedup on activity_id)
-    ev_id, ev_data = section_block("events", doc_id, blocks)
-    ev_items = (ev_data or {}).get("items", [])
-    known = {e.get("activity_id") for e in ev_items if e.get("activity_id")}
+    events = read_section("events", blocks)
+    known = {e.get("activity_id") for e in events if e.get("activity_id")}
     new_events = [e for e in _detect_events(acts)
                   if e.get("activity_id") not in known]
     if new_events:
-        ev_items.extend(new_events)
-        write_section("events", {"items": ev_items}, doc_id, block_id=ev_id)
+        events.extend(new_events)
+        write_section("events", events, doc_id, blocks)
 
     print(f"Rollup complete for {week_start} to {week_end}: "
           f"{len(acts)} activities, {len(new_events)} new event(s).")
