@@ -27,6 +27,10 @@ Sections:
 Per-interval / lap detail is not yet captured; it will be added in a follow-up
 with compact trimming.
 
+Activities the Intervals.icu API returns as stubs (id + start time only,
+e.g. Strava-sourced activities such as indoor rides) carry no usable data and
+are dropped from both the detail sync and the weekly rollup.
+
 Environment variables (GitHub Actions secrets):
   INTERVALS_ATHLETE_ID   e.g. i588094
   INTERVALS_API_KEY      Intervals.icu API key
@@ -108,6 +112,16 @@ ACT_FIELDS = ["id", "start_date_local", "type", "name", "moving_time",
 
 WEL_FIELDS = ["id", "ctl", "atl", "rampRate", "restingHR", "hrv", "hrvSDNN",
               "sleepSecs", "sleepScore", "weight", "eftp"]
+
+
+def is_data_activity(a):
+    """True if an activity carries real training data.
+
+    The Intervals.icu API returns Strava-sourced activities (for example
+    indoor ROUVY rides) as stubs with only id and start time. Those carry
+    no usable data and are dropped.
+    """
+    return bool(a.get("type"))
 
 
 def trim_activity(a):
@@ -294,7 +308,8 @@ def run_sync():
     today = today_mel()
     oldest = today - dt.timedelta(days=DETAIL_DAYS)
 
-    activities = [trim_activity(a) for a in fetch_activities(oldest, today)]
+    activities = [trim_activity(a) for a in fetch_activities(oldest, today)
+                  if is_data_activity(a)]
     wellness = [trim_wellness(w) for w in fetch_wellness(oldest, today)]
 
     write_section("detail_activity", activities, doc_id, blocks)
@@ -364,7 +379,8 @@ def run_rollup():
     week_end = today - dt.timedelta(days=1)            # Sunday just gone
     week_start = week_end - dt.timedelta(days=6)       # the Monday
 
-    acts = [trim_activity(a) for a in fetch_activities(week_start, week_end)]
+    acts = [trim_activity(a) for a in fetch_activities(week_start, week_end)
+            if is_data_activity(a)]
     wel = [trim_wellness(w) for w in fetch_wellness(week_start, week_end)]
 
     sports = {}
