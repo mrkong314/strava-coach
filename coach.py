@@ -14,18 +14,20 @@ Modes:
 Craft caps a single block at 10,000 characters, so each logical section is
 stored across as many sub-blocks as needed. Every managed block is a fenced
 JSON object carrying:
-  _section : detail_activity | detail_wellness | weekly | records | events
+  _section : detail_activity | detail_wellness | detail_laps |
+             weekly | records | events
   _part    : 0-based index of this block within its section
   items    : a slice of that section's list
 
 Sections:
   detail_activity / detail_wellness  - rolling 90-day window, rewritten each sync
+  detail_laps - lap/interval breakdown for substantial activities in the
+                window. A flat list; each item is one lap tagged with `aid`
+                (parent activity id) and `n` (lap number). Fetched once per
+                activity, since laps are static once an activity is complete.
   weekly   - append-only, one item per completed week
   records  - PB / FTP progression (seeded once)
   events   - append-only milestone races and key sessions
-
-Per-interval / lap detail is not yet captured; it will be added in a follow-up
-with compact trimming.
 
 Activities the Intervals.icu API returns as stubs (id + start time only,
 e.g. Strava-sourced activities such as indoor rides) carry no usable data and
@@ -67,6 +69,12 @@ JSON_BUDGET = 8500
 RUN_EVENT_KM   = 40
 RIDE_EVENT_KM  = 200
 SWIM_EVENT_KM  = 4
+
+# Laps are fetched only for runs, rides and swims at least this long.
+LAP_MIN_MINUTES = 20
+# Sanity cap on laps stored per activity. Real interval sessions are well
+# under this; only an ultra-long auto-lapped activity would ever hit it.
+MAX_LAPS = 120
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SEED_FILE = os.path.join(HERE, "history_seed.json")
@@ -143,6 +151,79 @@ def trim_wellness(w):
         row["form"] = round(row["ctl"] - row["atl"], 1)
     if row.get("sleepSecs"):
         row["sleepHours"] = round(row["sleepSecs"] / 3600, 1)
+    return row
+
+
+def fetch_intervals(activity_id):
+    """Return the ordered interval/lap list for one activity, or []."""
+    data = iget(f"/activity/{activity_id}/intervals")
+    return data.get("icu_intervals") or []
+
+
+def lap_eligible(activity):
+    """True if an activity is worth fetching lap detail for.
+
+    Restricted to runs, rides and swims of meaningful length; short easy
+    activities (e.g. 1 km night runs) have no lap structure worth a call.
+    """
+    if _sport_group(activity.get("type")) not in ("run", "ride", "swim"):
+        return False
+    return (activity.get("minutes") or 0) >= LAP_MIN_MINUTES
+
+
+def _pace_min_km(seconds, metres):
+    if seconds and metres and metres > 0:
+        return round((seconds / 60) / (metres / 1000), 2)
+    return None
+
+
+# Intervals.icu interval field -> compact lap key. None values drop out, so a
+# run carries no power keys and a ride carries no run-specific keys.
+LAP_FIELD_MAP = [
+    ("average_heartrate", "hr"),
+    ("min_heartrate", "hrmin"),
+    ("max_heartrate", "hrmax"),
+    ("average_watts", "w"),
+    ("min_watts", "wmin"),
+    ("max_watts", "wmax"),
+    ("weighted_average_watts", "np"),
+    ("intensity", "if"),
+    ("zone", "zone"),
+    ("training_load", "load"),
+]
+
+
+def trim_lap(iv, n, aid):
+    """Compact one Intervals.icu interval object into a flat lap row."""
+    row = {"aid": aid, "n": n}
+    t = iv.get("type")
+    if t:
+        row["type"] = str(t).lower()
+    sec = iv.get("moving_time")
+    if sec is not None:
+        row["sec"] = sec
+    dist = iv.get("distance")
+    if dist is not None:
+        row["m"] = round(dist)
+    for src, dst in LAP_FIELD_MAP:
+        v = iv.get(src)
+        if v is not None:
+            row[dst] = v
+    cad = iv.get("average_cadence")
+    if cad is not None:
+        row["cad"] = round(cad)
+    pace = _pace_min_km(sec, dist)
+    if pace is not None:
+        row["pace"] = pace
+    gap_speed = iv.get("gap")          # grade-adjusted speed, m/s
+    if gap_speed:
+        row["gap"] = round((1000 / gap_speed) / 60, 2)
+    elev = iv.get("total_elevation_gain")
+    if elev:
+        row["el"] = round(elev, 1)
+    grad = iv.get("average_gradient")
+    if grad is not None:
+        row["grad"] = round(grad * 100, 1)
     return row
 
 
@@ -289,6 +370,7 @@ def ensure_structure(doc_id, blocks):
     write_section("events", seed.get("events", []), doc_id, blocks)
     write_section("records", rec_items, doc_id, blocks)
     write_section("weekly", [], doc_id, blocks)
+    write_section("detail_laps", [], doc_id, blocks)
     return True
 
 
@@ -314,8 +396,39 @@ def run_sync():
 
     write_section("detail_activity", activities, doc_id, blocks)
     write_section("detail_wellness", wellness, doc_id, blocks)
+
+    # Laps: static once an activity is complete, so fetch each activity once
+    # and reuse it thereafter. Steady-state syncs fetch nothing.
+    stored = {}
+    for r in read_section("detail_laps", blocks):
+        stored.setdefault(r.get("aid"), []).append(r)
+
+    laps_out, fetched = [], 0
+    for a in activities:
+        if not lap_eligible(a):
+            continue
+        aid = a.get("id")
+        if aid in stored:
+            laps_out.extend(stored[aid])
+            continue
+        try:
+            ivs = fetch_intervals(aid)
+        except requests.RequestException as e:
+            print(f"  laps fetch failed for {aid}: {e}")
+            continue
+        laps_out.extend(trim_lap(iv, i + 1, aid)
+                        for i, iv in enumerate(ivs[:MAX_LAPS]))
+        fetched += 1
+
+    # Only rewrite detail_laps when its set of activities actually changed
+    # (new activity fetched, or an old one aged out of the window).
+    if {r["aid"] for r in laps_out} != set(stored):
+        write_section("detail_laps", laps_out, doc_id, blocks)
+
     print(f"Sync complete: {len(activities)} activities, "
-          f"{len(wellness)} wellness records.")
+          f"{len(wellness)} wellness records, "
+          f"laps for {len({r['aid'] for r in laps_out})} activities "
+          f"({fetched} newly fetched).")
 
 
 # --------------------------------------------------------------------------
