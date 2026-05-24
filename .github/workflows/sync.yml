@@ -2,7 +2,7 @@ name: Sync Training Data
 
 on:
   schedule:
-    - cron: '2,7,12,17,22,27,32,37,42,47,52,57 * * * *'     # every 30 minutes
+    - cron: '2,7,12,17,22,27,32,37,42,47,52,57 * * * *'     # every 5 minutes
   workflow_dispatch:           # allows manual runs from the Actions tab
 
 jobs:
