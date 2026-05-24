@@ -5,11 +5,10 @@ coach.py - Intervals.icu -> Craft training data pipeline.
 Pure data sync. No LLM in the pipeline; all analysis happens in chat.
 
 Modes:
-  sync     Refresh the Detail section (last 90 days of activities + wellness,
-           plus per-interval data for the last 21 days). Run every 30 min.
-           On first run, if the Training Log has no managed sections, it
-           creates the four-section structure and seeds Events and Records
-           from history_seed.json.
+  sync     Refresh the Detail section (last 90 days of activities + wellness).
+           Run every 30 min. On first run, if the Training Log has no managed
+           sections, it creates the four-section structure and seeds Events
+           and Records from history_seed.json.
   rollup   Append last week's summary block, plus any new events detected in
            that week. Run weekly on Monday.
 
@@ -19,6 +18,9 @@ fenced JSON object identified by its "_section" key:
   weekly   - append-only, one entry per completed week
   records  - append-only PB / FTP progression
   events   - append-only milestone races and key sessions
+
+Note: per-interval / lap detail is not yet captured. It will be added in a
+follow-up version with compact trimming and multi-block storage.
 
 Environment variables (GitHub Actions secrets):
   INTERVALS_ATHLETE_ID   e.g. i588094
@@ -48,8 +50,7 @@ INTERVALS_BASE = "https://intervals.icu/api/v1"
 # because the jobs never run near local midnight.
 MELBOURNE = dt.timezone(dt.timedelta(hours=10))
 
-DETAIL_DAYS   = 90    # rolling detail window
-INTERVAL_DAYS = 21    # per-interval detail kept for this many recent days
+DETAIL_DAYS = 90    # rolling detail window
 
 # Event detection thresholds
 RUN_EVENT_KM   = 40    # runs at/near marathon distance and beyond
@@ -90,14 +91,6 @@ def fetch_wellness(oldest, newest):
         f"/athlete/{INTERVALS_ATHLETE_ID}/wellness",
         {"oldest": oldest.isoformat(), "newest": newest.isoformat()},
     )
-
-
-def fetch_intervals(activity_id):
-    """Per-interval / lap detail for one activity. None if unavailable."""
-    try:
-        return iget(f"/activity/{activity_id}/intervals")
-    except Exception:
-        return None
 
 
 # --- field trimming -------------------------------------------------------
@@ -263,33 +256,13 @@ def run_sync():
 
     today = today_mel()
     oldest = today - dt.timedelta(days=DETAIL_DAYS)
-    interval_cutoff = today - dt.timedelta(days=INTERVAL_DAYS)
 
-    acts_raw = fetch_activities(oldest, today)
-    wel_raw = fetch_wellness(oldest, today)
+    activities = [trim_activity(a)
+                  for a in fetch_activities(oldest, today)]
+    wellness = [trim_wellness(w)
+                for w in fetch_wellness(oldest, today)]
 
-    activities = [trim_activity(a) for a in acts_raw]
-    wellness = [trim_wellness(w) for w in wel_raw]
-
-    # carry forward interval data we already hold; fetch only for new activities
-    det_id, det_data = section_block("detail", doc_id, blocks)
-    prev_intervals = {}
-    if det_data:
-        for a in det_data.get("activities", []):
-            if a.get("intervals") is not None and a.get("id") is not None:
-                prev_intervals[a["id"]] = a["intervals"]
-
-    for a in activities:
-        sd = (a.get("start_date_local") or "")[:10]
-        if sd and sd >= interval_cutoff.isoformat():
-            aid = a.get("id")
-            if aid in prev_intervals:
-                a["intervals"] = prev_intervals[aid]
-            elif aid is not None:
-                iv = fetch_intervals(aid)
-                if iv is not None:
-                    a["intervals"] = iv
-
+    det_id, _ = section_block("detail", doc_id, blocks)
     payload = {"window_days": DETAIL_DAYS, "wellness": wellness,
                "activities": activities}
     write_section("detail", payload, doc_id, block_id=det_id)
