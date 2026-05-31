@@ -272,3 +272,189 @@ def _chunk_items(items):
         cur.append(it)
         cur_len += size + 1
     if cur or not chunks:
+        chunks.append(cur)
+    return chunks
+
+
+def write_section(section, items, doc_id, blocks):
+    old_ids = [b.get("id") for b in blocks
+               if (_extract_json(b.get("markdown", "")) or {}).get("_section") == section]
+    craft_delete(old_ids)
+    stamp = dt.datetime.now(MELBOURNE).isoformat(timespec="seconds")
+    for i, chunk in enumerate(_chunk_items(list(items))):
+        payload = {"_section": section, "_part": i, "_updated": stamp, "items": chunk}
+        markdown = "```json\n" + json.dumps(payload, separators=(",", ":")) + "\n```"
+        craft_post(markdown, doc_id)
+
+
+# --------------------------------------------------------------------------
+# PULL : Hevy completed workouts -> Craft Log detail_gym section
+# --------------------------------------------------------------------------
+
+def trim_workout(w):
+    """Reduce a Hevy workout to the fields the Log needs for progression."""
+    out = {
+        "id": w.get("id"),
+        "date": (w.get("start_time", "") or "")[:10],
+        "title": w.get("title"),
+        "updated_at": w.get("updated_at"),
+        "exercises": [],
+    }
+    for ex in w.get("exercises", []) or []:
+        tid = ex.get("exercise_template_id")
+        name = ID_TO_NAME.get(tid, ex.get("title") or tid)
+        sets = []
+        for s in ex.get("sets", []) or []:
+            row = {}
+            if s.get("weight_kg") is not None:
+                row["kg"] = s["weight_kg"]
+            if s.get("reps") is not None:
+                row["reps"] = s["reps"]
+            if s.get("rpe") is not None:
+                row["rpe"] = s["rpe"]
+            if s.get("type") and s["type"] != "normal":
+                row["type"] = s["type"]
+            if row:
+                sets.append(row)
+        if sets:
+            out["exercises"].append({"exercise": name, "sets": sets})
+    return out
+
+
+def _workout_hash(item):
+    """Stable hash of the meaningful content, to detect edited workouts."""
+    payload = json.dumps(item.get("exercises", []), sort_keys=True,
+                         separators=(",", ":"))
+    return hashlib.sha1((payload + str(item.get("updated_at"))).encode()).hexdigest()[:12]
+
+
+def run_pull():
+    if not HEVY_API_KEY:
+        raise RuntimeError("HEVY_API_KEY not set.")
+    doc_id = craft_document_id()
+    blocks = []
+    _walk(craft_get_blocks(doc_id), blocks)
+
+    existing = read_section(GYM_SECTION, blocks)
+    by_id = {it.get("id"): it for it in existing if it.get("id")}
+
+    fetched = hevy_recent_workouts()
+    changed = False
+    for w in fetched:
+        trimmed = trim_workout(w)
+        wid = trimmed["id"]
+        if not wid or not trimmed["exercises"]:
+            continue
+        trimmed["_h"] = _workout_hash(trimmed)
+        prev = by_id.get(wid)
+        if prev is None or prev.get("_h") != trimmed["_h"]:
+            by_id[wid] = trimmed
+            changed = True
+
+    if not changed:
+        print("No new or changed Hevy workouts. Nothing written.")
+        return
+
+    merged = sorted(by_id.values(), key=lambda x: x.get("date", ""), reverse=True)
+    write_section(GYM_SECTION, merged, doc_id, blocks)
+    print(f"Wrote {len(merged)} gym workouts to '{GYM_SECTION}' "
+          f"({len(fetched)} fetched this run).")
+
+
+# --------------------------------------------------------------------------
+# PUSH : calendar [HEVY-ROUTINE] blocks -> Hevy routines
+# --------------------------------------------------------------------------
+
+def parse_hevy_block(description):
+    m = re.search(r"\[HEVY-ROUTINE\](.*?)\[/HEVY-ROUTINE\]", description or "",
+                  re.DOTALL)
+    if not m:
+        return None
+    title, exercises = None, []
+    for line in m.group(1).strip().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if line.lower().startswith("title="):
+            title = line.split("=", 1)[1].strip()
+            continue
+        parts = [p.strip() for p in line.split("|")]
+        if len(parts) < 6:
+            continue
+        tid, _name, sets, reps, weight, rest = parts[:6]
+        note = parts[6] if len(parts) > 6 else ""
+        try:
+            sets, reps, rest = int(sets), int(reps), int(rest)
+        except ValueError:
+            continue
+        weight = float(weight) if weight else None
+        set_objs = []
+        for _ in range(sets):
+            s = {"type": "normal", "reps": reps}
+            if tid not in REPS_ONLY_IDS and weight is not None:
+                s["weight_kg"] = weight
+            set_objs.append(s)
+        ex = {"exercise_template_id": tid, "rest_seconds": rest, "sets": set_objs}
+        if note:
+            ex["notes"] = note.replace("@", "")  # @ silently 400s in Hevy notes
+        exercises.append(ex)
+    if not title or not exercises:
+        return None
+    return {"routine": {"title": title, "folder_id": None,
+                        "notes": "", "exercises": exercises}}
+
+
+def _calendar_service():
+    from google.oauth2 import service_account
+    from googleapiclient.discovery import build
+    info = json.loads(os.environ["GOOGLE_CREDENTIALS_JSON"])
+    creds = service_account.Credentials.from_service_account_info(
+        info, scopes=["https://www.googleapis.com/auth/calendar.readonly"])
+    return build("calendar", "v3", credentials=creds, cache_discovery=False)
+
+
+def run_push():
+    if not HEVY_API_KEY:
+        raise RuntimeError("HEVY_API_KEY not set.")
+    cal_id = os.environ["GCAL_CALENDAR_ID"]
+    svc = _calendar_service()
+
+    today = today_mel()
+    time_min = dt.datetime.combine(today, dt.time.min, MELBOURNE).isoformat()
+    time_max = dt.datetime.combine(today + dt.timedelta(days=28),
+                                   dt.time.max, MELBOURNE).isoformat()
+    events = svc.events().list(calendarId=cal_id, timeMin=time_min,
+                               timeMax=time_max, singleEvents=True,
+                               orderBy="startTime", maxResults=200).execute().get("items", [])
+
+    existing = {r.get("title"): r for r in hevy_list_routines()}
+    created, updated, skipped = 0, 0, 0
+    for ev in events:
+        routine = parse_hevy_block(ev.get("description", ""))
+        if not routine:
+            continue
+        title = routine["routine"]["title"]
+        if title in existing:
+            rid = existing[title].get("id")
+            hevy_put(f"/routines/{rid}", routine)
+            updated += 1
+        else:
+            hevy_post("/routines", routine)
+            created += 1
+    print(f"Push complete: {created} created, {updated} updated, {skipped} skipped.")
+
+
+# --------------------------------------------------------------------------
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--mode", required=True, choices=["pull", "push"])
+    args = ap.parse_args()
+    if args.mode == "pull":
+        run_pull()
+    else:
+        run_push()
+
+
+if __name__ == "__main__":
+    main()
