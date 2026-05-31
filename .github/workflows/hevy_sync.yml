@@ -1,0 +1,29 @@
+name: Hevy Sync
+
+# Triggered on demand from the Actions tab and by cron-job.org hitting the
+# workflow_dispatch API endpoint (its own job, separate from Sync Training Data).
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "pull (Hevy -> Craft Log) or push (calendar -> Hevy)"
+        required: true
+        default: pull
+        type: choice
+        options: [pull, push]
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements-hevy.txt
+      - run: python hevy_sync.py --mode ${{ inputs.mode }}
+        env:
+          HEVY_API_KEY:           ${{ secrets.HEVY_API_KEY }}
+          CRAFT_API_BASE:         ${{ secrets.CRAFT_API_BASE }}
+          GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
+          GCAL_CALENDAR_ID:       ${{ secrets.GCAL_CALENDAR_ID }}
