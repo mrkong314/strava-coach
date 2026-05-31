@@ -1,10 +1,6 @@
 name: Push planned workouts to intervals.icu
 
 on:
-  schedule:
-    # Hourly, on the hour (UTC). GitHub cron is best-effort and may slip;
-    # the windowed upsert is idempotent so a late run is harmless.
-    - cron: "7,22,37,52 * * * *"
   workflow_dispatch:
     # Manual "Run workflow" button -- use right after a day-of adjustment
     # to push the change immediately instead of waiting for the next hour.
