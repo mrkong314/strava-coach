@@ -83,9 +83,12 @@ implemented; rest-pattern encoding is the current approach.
 ### Warmup ramps
 Heavy barbell compounds (`RAMP_IDS`: squat/deadlift variants, barbell bench,
 incline bench, OHP, barbell RDL) get a warmup ramp on push: 2 sets at ~60% and
-~80% of the top weight, rounded to 2.5 kg, typed as Hevy `"warmup"` sets so they
-do not count as working volume. The prescribed working sets are unchanged.
+~80% of the top weight, rounded to 2.5 kg, typed as Hevy `"warmup"`. The warmups
+come **out of** the prescribed set count, not on top: a lift written as N sets
+becomes 2 warmup + (N-2) working, clamped to at least 1 working set (so a 2-set
+lift gives 1 warmup + 1 working). Prescribe set counts inclusive of the warmups.
 Accessories, dumbbell/machine variants and reps-only lifts do not ramp. Adjust
-which lifts ramp via `RAMP_IDS`; adjust the ladder via `RAMP_FRACTIONS`. Note:
-Hevy rest is per-exercise, so a ramp lift that also leads a superset shares the
-short intra-pair rest on its warmups - harmless as warmups are light.
+which lifts ramp via `RAMP_IDS`, the ladder via `RAMP_FRACTIONS`, rounding via
+`_round_2p5`. Note: Hevy rest is per-exercise, so a ramp lift that also leads a
+superset shares the short intra-pair rest on its warmups - harmless as warmups
+are light.
