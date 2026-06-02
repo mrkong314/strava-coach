@@ -137,6 +137,8 @@ def hevy_post(path, body):
 def hevy_put(path, body):
     r = requests.put(f"{HEVY_BASE}{path}", json=body,
                      headers=HEVY_HEADERS, timeout=60)
+    if not r.ok:
+        print(f"PUT {path} -> {r.status_code}: {r.text}")
     r.raise_for_status()
     return r.json()
 
