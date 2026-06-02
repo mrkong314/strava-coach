@@ -438,7 +438,12 @@ def run_push():
         title = routine["routine"]["title"]
         if title in existing:
             rid = existing[title].get("id")
-            hevy_put(f"/routines/{rid}", routine)
+            # Hevy rejects folder_id on the update endpoint ("not allowed"),
+            # though it is accepted on create. Strip it for the PUT only.
+            update_body = {"routine": {k: v
+                                       for k, v in routine["routine"].items()
+                                       if k != "folder_id"}}
+            hevy_put(f"/routines/{rid}", update_body)
             updated += 1
         else:
             hevy_post("/routines", routine)
