@@ -402,8 +402,8 @@ def parse_hevy_block(description):
         exercises.append(ex)
     if not title or not exercises:
         return None
-    return {"routine": {"title": title, "folder_id": None,
-                        "notes": "", "exercises": exercises}}
+return {"routine": {"title": title, "folder_id": None,
+                    "notes": title, "exercises": exercises}}
 
 
 def _calendar_service():
