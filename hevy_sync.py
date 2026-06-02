@@ -111,6 +111,34 @@ REPS_ONLY_IDS = {
     "C6C9B8A0",  # Plank (duration)
 }
 
+# Heavy barbell compounds that get a warmup ramp on push: 2 warmup sets at
+# ~60% and ~80% of the top (working) weight are prepended, typed as Hevy
+# "warmup" sets so they do not count as working volume. Accessories, dumbbell/
+# machine variants and reps-only lifts are excluded (no ramp).
+RAMP_IDS = {
+    "D04AC939",  # Back Squat (Barbell)
+    "5046D0A9",  # Front Squat
+    "CE1054CE",  # Pause Squat (Barbell)
+    "38FC1AB9",  # Box Squat (Barbell)
+    "C6272009",  # Deadlift (Barbell)
+    "D20D7BBE",  # Sumo Deadlift (Barbell)
+    "B923B230",  # Deadlift (Trap bar)
+    "2B4B7310",  # Romanian Deadlift (Barbell)
+    "79D0BB3A",  # Bench Press (Barbell)
+    "50DFDFAB",  # Incline Bench Press (Barbell)
+    "7B8D84E8",  # Overhead Press (Barbell)
+}
+
+# Warmup ramp: fractions of the top weight. (Hevy rest is per-exercise, not
+# per-set, so warmup sets share the lift's rest_seconds; harmless as warmups
+# are light.)
+RAMP_FRACTIONS = (0.60, 0.80)
+
+
+def _round_2p5(kg):
+    """Round to nearest 2.5 kg (loadable on a barbell)."""
+    return round(kg / 2.5) * 2.5
+
 
 def today_mel():
     return dt.datetime.now(MELBOURNE).date()
@@ -391,6 +419,13 @@ def parse_hevy_block(description):
             continue
         weight = float(weight) if weight else None
         set_objs = []
+        # Warmup ramp on heavy barbell compounds: prepend ramp sets at a
+        # fraction of the top weight, typed "warmup" so they are not working
+        # volume. Skipped for reps-only lifts and when no weight is given.
+        if tid in RAMP_IDS and tid not in REPS_ONLY_IDS and weight is not None:
+            for frac in RAMP_FRACTIONS:
+                set_objs.append({"type": "warmup", "reps": reps,
+                                 "weight_kg": _round_2p5(weight * frac)})
         for _ in range(sets):
             s = {"type": "normal", "reps": reps}
             if tid not in REPS_ONLY_IDS and weight is not None:
