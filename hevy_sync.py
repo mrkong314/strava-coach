@@ -419,14 +419,19 @@ def parse_hevy_block(description):
             continue
         weight = float(weight) if weight else None
         set_objs = []
-        # Warmup ramp on heavy barbell compounds: prepend ramp sets at a
-        # fraction of the top weight, typed "warmup" so they are not working
-        # volume. Skipped for reps-only lifts and when no weight is given.
+        # Warmup ramp on heavy barbell compounds: the prescribed set count
+        # INCLUDES the warmups, so ramp sets come out of that total (e.g. 4
+        # sets = 2 warmup + 2 working). Warmups are typed "warmup" and ramp to
+        # a fraction of the top weight. Always leave at least 1 working set.
+        # Skipped for reps-only lifts and when no weight is given.
+        working = sets
         if tid in RAMP_IDS and tid not in REPS_ONLY_IDS and weight is not None:
-            for frac in RAMP_FRACTIONS:
+            n_warm = min(len(RAMP_FRACTIONS), max(0, sets - 1))
+            for frac in RAMP_FRACTIONS[:n_warm]:
                 set_objs.append({"type": "warmup", "reps": reps,
                                  "weight_kg": _round_2p5(weight * frac)})
-        for _ in range(sets):
+            working = sets - n_warm
+        for _ in range(working):
             s = {"type": "normal", "reps": reps}
             if tid not in REPS_ONLY_IDS and weight is not None:
                 s["weight_kg"] = weight
