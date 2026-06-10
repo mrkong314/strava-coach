@@ -293,7 +293,7 @@ class Intervals:
         self.athlete = athlete_id
         self.session = requests.Session()
         # HTTP basic with username "API_KEY" is the classic form and works on
-        # all endpoints. (The docs also show "Authorization: ApiKey ID:KEY".)
+        # all endpoints. (The docs also show "Authorization: ApiKey ID:KEY.")
         self.session.auth = ("API_KEY", api_key)
         self.session.headers.update({"Content-Type": "application/json"})
 
@@ -303,6 +303,11 @@ class Intervals:
             "oldest": start.isoformat(),
             "newest": (end - dt.timedelta(days=1)).isoformat(),
             "category": "WORKOUT",
+            # Request external_id explicitly. The list endpoint's default
+            # field set does not reliably include it; without it every owned
+            # workout is invisible to the reconcile and gets re-created each
+            # run (the duplicate pile-up).
+            "fields": "id,external_id,name,description,type,start_date_local",
         }
         r = self.session.get(url, params=params, timeout=30)
         r.raise_for_status()
@@ -310,7 +315,12 @@ class Intervals:
 
     def create(self, payload: dict):
         url = f"{INTERVALS_BASE}/athlete/{self.athlete}/events"
-        r = self.session.post(url, data=json.dumps(payload), timeout=30)
+        # upsertOnUid: intervals.icu dedups on external_id server-side, so a
+        # repeated create updates the existing event instead of adding a copy.
+        # Belt-and-braces with the fields fix above -- duplicates become
+        # impossible even if the local read-back match ever misses again.
+        r = self.session.post(url, params={"upsertOnUid": "true"},
+                              data=json.dumps(payload), timeout=30)
         r.raise_for_status()
         return r.json()
 
