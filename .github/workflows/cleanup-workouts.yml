@@ -1,0 +1,40 @@
+name: Cleanup intervals.icu planned workouts
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run (log deletions, delete nothing)"
+        required: false
+        default: "1"
+      start_offset_days:
+        description: "Window start = today + N days (1 = tomorrow)"
+        required: false
+        default: "1"
+
+concurrency:
+  group: push-workouts          # share the push lock; never run alongside a push
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Delete owned planned workouts
+        env:
+          INTERVALS_ATHLETE_ID: ${{ secrets.INTERVALS_ATHLETE_ID }}
+          INTERVALS_API_KEY: ${{ secrets.INTERVALS_API_KEY }}
+          START_OFFSET_DAYS: ${{ github.event.inputs.start_offset_days }}
+          WINDOW_DAYS: "14"
+          DRY_RUN: ${{ github.event.inputs.dry_run }}
+        run: python scripts/cleanup_workouts.py
