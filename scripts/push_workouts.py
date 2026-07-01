@@ -314,13 +314,16 @@ class Intervals:
         return r.json()
 
     def create(self, payload: dict):
-        url = f"{INTERVALS_BASE}/athlete/{self.athlete}/events"
-        # upsertOnUid: intervals.icu dedups on external_id server-side, so a
+        # Use the documented bulk upsert keyed on external_id. intervals.icu
+        # matches external_id against events THIS application created, so a
         # repeated create updates the existing event instead of adding a copy.
-        # Belt-and-braces with the fields fix above -- duplicates become
-        # impossible even if the local read-back match ever misses again.
-        r = self.session.post(url, params={"upsertOnUid": "true"},
-                              data=json.dumps(payload), timeout=30)
+        # (The old single-event upsertOnUid=true keyed on the server-generated
+        # `uid`, which we never set, so it silently inserted every run -- that
+        # was the duplicate-pileup cause.) Sending a one-element array keeps the
+        # per-event call structure unchanged.
+        url = f"{INTERVALS_BASE}/athlete/{self.athlete}/events/bulk"
+        r = self.session.post(url, params={"upsert": "true"},
+                              data=json.dumps([payload]), timeout=30)
         r.raise_for_status()
         return r.json()
 
@@ -359,37 +362,56 @@ def main() -> int:
             desired[pid] = build_payload(ev)
     log(f"[push] {len(desired)} events pass the gates (future + planned format)")
 
-    # ---- read intervals existing (only ones we own)
+    # ---- read intervals existing (only ones we own), grouped by external_id.
+    # A dict keyed on external_id would collapse a duplicate pile to one entry,
+    # hiding the extras from reconcile -- which is how a pile can never shrink.
+    # Group into lists so we can see and collapse duplicates below.
     icu = Intervals(athlete_id, api_key)
     existing_all = icu.list_events(today, end)
-    existing = {e["external_id"]: e for e in existing_all
-                if (e.get("external_id") or "").startswith(EXTERNAL_ID_PREFIX)}
-    log(f"[push] intervals has {len(existing)} workouts we own in window")
+    existing = {}    # external_id -> list[event]
+    for e in existing_all:
+        eid = e.get("external_id") or ""
+        if eid.startswith(EXTERNAL_ID_PREFIX):
+            existing.setdefault(eid, []).append(e)
+    owned_count = sum(len(v) for v in existing.values())
+    dup_ids = sum(1 for v in existing.values() if len(v) > 1)
+    log(f"[push] intervals has {owned_count} workouts we own in window "
+        f"across {len(existing)} ids ({dup_ids} with duplicates)")
 
     created = updated = skipped = deleted = 0
 
-    # ---- create / update
+    # ---- create / update, collapsing any duplicate pile to a single event
     for pid, payload in desired.items():
-        if pid not in existing:
+        matches = existing.get(pid, [])
+        if not matches:
             log(f"  + create {payload['start_date_local'][:10]} {payload['type']:14} {payload['name'][:48]}")
             if not DRY_RUN:
                 icu.create(payload)
             created += 1
-        elif payload_differs(existing[pid], payload):
+            continue
+        # keep the first match; delete any extras (the pile)
+        keep = matches[0]
+        for extra in matches[1:]:
+            log(f"  - dedup  {(extra.get('start_date_local') or '')[:10]} {extra.get('name','')[:48]}")
+            if not DRY_RUN:
+                icu.delete(extra["id"])
+            deleted += 1
+        if payload_differs(keep, payload):
             log(f"  ~ update {payload['start_date_local'][:10]} {payload['type']:14} {payload['name'][:48]}")
             if not DRY_RUN:
-                icu.update(existing[pid]["id"], payload)
+                icu.update(keep["id"], payload)
             updated += 1
         else:
             skipped += 1
 
-    # ---- delete ours that no longer have a source event
-    for pid, ev in existing.items():
+    # ---- delete ours that no longer have a source event (all copies)
+    for pid, matches in existing.items():
         if pid not in desired:
-            log(f"  - delete {(ev.get('start_date_local') or '')[:10]} {ev.get('name','')[:48]}")
-            if not DRY_RUN:
-                icu.delete(ev["id"])
-            deleted += 1
+            for ev in matches:
+                log(f"  - delete {(ev.get('start_date_local') or '')[:10]} {ev.get('name','')[:48]}")
+                if not DRY_RUN:
+                    icu.delete(ev["id"])
+                deleted += 1
 
     log(f"[push] done: created={created} updated={updated} "
         f"skipped={skipped} deleted={deleted}")
