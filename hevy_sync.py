@@ -28,6 +28,7 @@ sections under an 8500-char budget, delete-then-repost section writes.
 import os
 import re
 import json
+import time
 import argparse
 import datetime as dt
 import hashlib
@@ -220,9 +221,42 @@ def hevy_recent_workouts():
 # Craft (identical mechanism to coach.py)
 # --------------------------------------------------------------------------
 
+CRAFT_RETRY_STATUSES = (429, 500, 502, 503, 504)
+
+
+def craft_get(path, params=None, attempts=4):
+    """GET against the Craft API with retry on transient 5xx/429.
+
+    Craft's connect gateway throws occasional 502s; a single one should not
+    kill a cron run. GETs are idempotent so retrying is safe. Backoff is
+    2s, 4s, 8s (max ~14s added). POST/DELETE are deliberately NOT retried:
+    with the delete-then-repost section mechanism, retrying a write that
+    actually landed before the gateway error would duplicate blocks.
+    """
+    delay = 2
+    for attempt in range(attempts):
+        try:
+            r = requests.get(f"{CRAFT_API_BASE}{path}", params=params or {},
+                             timeout=30)
+            if r.status_code in CRAFT_RETRY_STATUSES and attempt < attempts - 1:
+                print(f"GET {path} -> {r.status_code}, retrying in {delay}s")
+                time.sleep(delay)
+                delay *= 2
+                continue
+            r.raise_for_status()
+            return r
+        except (requests.exceptions.ConnectionError,
+                requests.exceptions.Timeout) as e:
+            if attempt < attempts - 1:
+                print(f"GET {path} -> {type(e).__name__}, retrying in {delay}s")
+                time.sleep(delay)
+                delay *= 2
+                continue
+            raise
+
+
 def craft_document_id():
-    r = requests.get(f"{CRAFT_API_BASE}/documents", timeout=30)
-    r.raise_for_status()
+    r = craft_get("/documents")
     live = [d for d in r.json().get("items", []) if not d.get("isDeleted")]
     if not live:
         raise RuntimeError("No documents available on the Craft connection.")
@@ -230,9 +264,7 @@ def craft_document_id():
 
 
 def craft_get_blocks(block_id):
-    r = requests.get(f"{CRAFT_API_BASE}/blocks", params={"id": block_id},
-                     timeout=30)
-    r.raise_for_status()
+    r = craft_get("/blocks", params={"id": block_id})
     return r.json()
 
 
