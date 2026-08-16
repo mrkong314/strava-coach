@@ -1,67 +1,32 @@
-#!/usr/bin/env python3
-"""
-seed_pbs.py - one-time (re-runnable) all-time PB seeding for the Current PBs
-collection (Activities Spec §12).
+name: Seed PBs
 
-Scans full activity history and computes the all-time bars for every metric
-that has a tag, then writes the result as a managed `pb_seed` section into
-the Training Log (same chunked-codeblock mechanism as coach.py). The Craft
-connect link only reaches the Training Log document, so this script cannot
-write the Current PBs collection directly; the final upsert of the seed into
-Current PBs is done in a Coach Claude chat, which reads the pb_seed section
-and writes the collection rows.
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run (print the seed, write nothing to Craft)"
+        type: boolean
+        default: false
 
-Data sources:
-  Intervals.icu (required; same creds as coach.py)
-    - full-history activity summaries -> Longest Run, Longest Ride,
-      Longest Swim, Most Climbing (single ride), plus per-activity metadata.
-    - power curve (opportunistic): tries the athlete power-curves endpoint
-      for the all-time Ride+VirtualRide curve; skipped with a note if the
-      endpoint shape differs.
-  Strava API v3 (optional; STRAVA_CLIENT_ID / STRAVA_CLIENT_SECRET /
-  STRAVA_REFRESH_TOKEN)
-    - per-run best_efforts -> run distance-split PBs (400m ... 50K).
-      Strava's public API returns best_efforts for runs only; ride
-      fastest-splits and BiggestClimb are not available here and stay
-      dormant until tagged live by /today.
-
-Existing bars are NOT invented: metrics with no computable value are simply
-omitted from the seed. Official race times recorded in Current PBs override
-rolling splits (Spec §12) - the chat-side upsert enforces that, not this
-script.
-
-Modes:
-  python3 seed_pbs.py            # compute + write pb_seed section to the Log
-  python3 seed_pbs.py --dry-run  # compute + print, no Craft write
-
-Environment (GitHub Actions secrets or local env):
-  INTERVALS_ATHLETE_ID, INTERVALS_API_KEY, CRAFT_API_BASE   (as coach.py)
-  STRAVA_CLIENT_ID, STRAVA_CLIENT_SECRET, STRAVA_REFRESH_TOKEN  (optional)
-"""
-
-import os
-import re
-import json
-import time
-import argparse
-import datetime as dt
-
-import requests
-
-INTERVALS_ATHLETE_ID = os.environ["INTERVALS_ATHLETE_ID"]
-INTERVALS_API_KEY    = os.environ["INTERVALS_API_KEY"]
-CRAFT_API_BASE       = os.environ["CRAFT_API_BASE"].rstrip("/")
-
-STRAVA_CLIENT_ID     = os.environ.get("STRAVA_CLIENT_ID")
-STRAVA_CLIENT_SECRET = os.environ.get("STRAVA_CLIENT_SECRET")
-STRAVA_REFRESH_TOKEN = os.environ.get("STRAVA_REFRESH_TOKEN")
-
-INTERVALS_BASE = "https://intervals.icu/api/v1"
-STRAVA_BASE    = "https://www.strava.com/api/v3"
-
-MELBOURNE = dt.timezone(dt.timedelta(hours=10))
-HISTORY_OLDEST = dt.date(2012, 1, 1)   # far enough back for full history
-JSON_BUDGET = 8500
+jobs:
+  seed:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests
+      - name: Run seed_pbs
+        env:
+          INTERVALS_ATHLETE_ID: ${{ secrets.INTERVALS_ATHLETE_ID }}
+          INTERVALS_API_KEY: ${{ secrets.INTERVALS_API_KEY }}
+          CRAFT_API_BASE: ${{ secrets.CRAFT_API_BASE }}
+          STRAVA_CLIENT_ID: ${{ secrets.STRAVA_CLIENT_ID }}
+          STRAVA_CLIENT_SECRET: ${{ secrets.STRAVA_CLIENT_SECRET }}
+          STRAVA_REFRESH_TOKEN: ${{ secrets.STRAVA_REFRESH_TOKEN }}
+        run: |
+          python3 seed_pbs.py ${{ inputs.dry_run && '--dry-run' || '' }}JSON_BUDGET = 8500
 SEED_SECTION = "pb_seed"
 
 # Strava run best_effort name -> Current PBs metric name
