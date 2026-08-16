@@ -28,6 +28,9 @@ Sections:
   weekly   - append-only, one item per completed week
   records  - PB / FTP progression (seeded once)
   events   - append-only milestone races and key sessions
+  log_index - one small block, rewritten after every write: current part-block
+              ids per section (with date ranges) plus a hash of today's
+              content. Read by the Coach Claude skills; see refresh_index().
 
 Activities the Intervals.icu API returns as stubs (id + start time only,
 e.g. Strava-sourced activities such as indoor rides) carry no usable data and
@@ -43,6 +46,7 @@ import os
 import re
 import json
 import argparse
+import hashlib
 import datetime as dt
 
 import requests
@@ -345,6 +349,107 @@ def write_section(section, items, doc_id, blocks):
 
 
 # --------------------------------------------------------------------------
+# Log index (consumed by the Coach Claude skills)
+# --------------------------------------------------------------------------
+# One small managed block, rewritten after every write to the Log. It gives
+# the skills (a) the current part-block ids per section with date ranges, so
+# they can read the Log without search-based discovery, and (b) a hash of
+# today's content (wellness + activities + gym), so the /today change gate
+# can decide "unchanged" from this one block without reading any part-block.
+
+INDEX_SECTION = "log_index"
+INDEX_MARKER = "LOG-INDEX-V1"
+
+_DATE_KEYS = {
+    "detail_activity": lambda it: (it.get("start_date_local") or "")[:10],
+    "detail_wellness": lambda it: it.get("id") or "",
+    "detail_gym":      lambda it: (it.get("date") or "")[:10],
+    "weekly":          lambda it: it.get("week_start") or "",
+    "events":          lambda it: it.get("date") or "",
+}
+
+
+def _part_date_range(section, items):
+    fn = _DATE_KEYS.get(section)
+    if not fn or not items:
+        return None, None
+    dates = sorted(d for d in (fn(it) for it in items) if d)
+    if not dates:
+        return None, None
+    return dates[0], dates[-1]
+
+
+def _today_content_hash(blocks, today_iso):
+    """SHA-256 over today's wellness item, activities and gym workouts,
+    verbatim as stored in the Log."""
+    wellness = [it for it in read_section("detail_wellness", blocks)
+                if it.get("id") == today_iso]
+    acts = sorted(
+        (it for it in read_section("detail_activity", blocks)
+         if (it.get("start_date_local") or "").startswith(today_iso)),
+        key=lambda a: ((a.get("start_date_local") or ""),
+                       str(a.get("id") or "")))
+    gym = sorted(
+        (it for it in read_section("detail_gym", blocks)
+         if (it.get("date") or "")[:10] == today_iso),
+        key=lambda g: str(g.get("id") or ""))
+    payload = {"date": today_iso,
+               "wellness": wellness[0] if wellness else None,
+               "activities": acts,
+               "gym": gym}
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True,
+                   separators=(",", ":")).encode()).hexdigest()
+
+
+def refresh_index(doc_id):
+    """Rewrite the log_index block from the document's current state.
+    Self-contained (does its own walk); call after any write to the Log.
+    Never fatal: an index failure must not fail the sync."""
+    try:
+        blocks = []
+        _walk(craft_get_blocks(doc_id), blocks)
+
+        parts, old_ids = {}, []
+        for b in blocks:
+            d = _extract_json(b.get("markdown", ""))
+            if not d or not d.get("_section"):
+                continue
+            sec = d["_section"]
+            if sec == INDEX_SECTION:
+                old_ids.append(b.get("id"))
+                continue
+            items = d.get("items", []) or []
+            entry = {"part": d.get("_part", 0), "id": b.get("id"),
+                     "n": len(items)}
+            lo, hi = _part_date_range(sec, items)
+            if lo:
+                entry["from"], entry["to"] = lo, hi
+            parts.setdefault(sec, []).append(entry)
+        for sec in parts:
+            parts[sec].sort(key=lambda e: e["part"])
+
+        today_iso = today_mel().isoformat()
+        payload = {
+            "_section": INDEX_SECTION, "_part": 0,
+            "marker": INDEX_MARKER,
+            "_updated": dt.datetime.now(MELBOURNE)
+                          .isoformat(timespec="seconds"),
+            "today": {"date": today_iso,
+                      "hash": _today_content_hash(blocks, today_iso)},
+            "parts": parts,
+        }
+        craft_delete(old_ids)
+        craft_post("```json\n"
+                   + json.dumps(payload, separators=(",", ":"))
+                   + "\n```", doc_id)
+        print(f"log_index refreshed ({sum(len(v) for v in parts.values())} "
+              f"part blocks indexed).")
+    except Exception as e:  # noqa: BLE001 - index is best-effort
+        print(f"log_index refresh failed (non-fatal): {e}")
+
+
+# --------------------------------------------------------------------------
 # First-run scaffold + seed
 # --------------------------------------------------------------------------
 
@@ -429,6 +534,8 @@ def run_sync():
           f"{len(wellness)} wellness records, "
           f"laps for {len({r['aid'] for r in laps_out})} activities "
           f"({fetched} newly fetched).")
+
+    refresh_index(doc_id)
 
 
 # --------------------------------------------------------------------------
@@ -550,6 +657,8 @@ def run_rollup():
 
     print(f"Rollup complete for {week_start} to {week_end}: "
           f"{len(acts)} activities, {len(new_events)} new event(s).")
+
+    refresh_index(doc_id)
 
 
 # --------------------------------------------------------------------------
