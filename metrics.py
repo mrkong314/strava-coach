@@ -15,11 +15,15 @@ Run on a cron (see .github/workflows/metrics.yml). Safe to re-run; writes
 only when the entry set changes. Calls refresh_index afterwards so the
 skills can find the new part-blocks without search.
 
+Constants (LTHR, fallback FTPs, W') are read at runtime from the Log's
+`athlete_constants` section, which Claude maintains in chat whenever the
+Coaching Reference changes - no repo edit needed on a constant change.
+The env values below are fallbacks only, used if that block is absent.
+
 Environment:
   INTERVALS_ATHLETE_ID, INTERVALS_API_KEY, CRAFT_API_BASE  (as coach.py)
-  LTHR_BIKE (default 165), LTHR_RUN (default 175)  - update these when the
-    Coaching Reference LTHR changes (see the constants checklist there)
-  WPRIME_J (default 20000) - W' estimate for W'bal
+  LTHR_BIKE (default 165), LTHR_RUN (default 175)  - fallbacks only
+  WPRIME_J (default 20000) - fallback W' estimate for W'bal
   METRICS_MAX_NEW (default 60) - new activities processed per run; the
     90-day backfill completes over the first few cron cycles
 """
@@ -280,6 +284,19 @@ def main():
     blocks = []
     _walk(craft_get_blocks(doc_id), blocks)
 
+    # Runtime constants from the Log's athlete_constants block (maintained
+    # by Claude alongside the Coaching Reference); env values are fallbacks.
+    const_rows = read_section("athlete_constants", blocks)
+    const = const_rows[0] if const_rows else {}
+    lthr_bike = int(const.get("lthr_bike") or LTHR_BIKE)
+    lthr_run  = int(const.get("lthr_run") or LTHR_RUN)
+    ftp_bike  = int(const.get("ftp_bike") or 205)
+    ftp_run   = int(const.get("ftp_run") or 354)
+    wprime    = int(const.get("wprime_j") or WPRIME_J)
+    src = "athlete_constants" if const else "env fallback"
+    print(f"constants ({src}): LTHR run {lthr_run} / bike {lthr_bike}, "
+          f"fallback FTP run {ftp_run} / bike {ftp_bike}, W' {wprime} J")
+
     activities = read_section("detail_activity", blocks)
     stored = {m.get("aid"): m for m in read_section(SECTION, blocks)}
     window_aids = {str(a.get("id")) for a in activities}
@@ -306,13 +323,13 @@ def main():
                                "note": "no usable streams"}
                 done += 1
                 continue
-            ftp = a.get("icu_ftp") or (205 if sport != "Run" else 354)
-            lthr = LTHR_RUN if sport == "Run" else LTHR_BIKE
+            ftp = a.get("icu_ftp") or (ftp_bike if sport != "Run" else ftp_run)
+            lthr = lthr_run if sport == "Run" else lthr_bike
             m = compute_metrics(
                 t, s.get("watts"), s.get("heartrate"), s.get("cadence"),
                 s.get("velocity_smooth"), s.get("altitude"),
                 s.get("distance"), ftp=ftp, lthr=lthr, sport=sport,
-                wprime=WPRIME_J)
+                wprime=wprime)
             m["aid"] = aid
             m["date"] = (a.get("start_date_local") or "")[:10]
             stored[aid] = m
