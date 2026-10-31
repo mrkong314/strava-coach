@@ -33,6 +33,7 @@ import re
 import json
 import argparse
 import datetime as dt
+from zoneinfo import ZoneInfo
 
 import requests
 
@@ -48,7 +49,7 @@ WPRIME_J  = int(os.environ.get("WPRIME_J", "20000"))
 MAX_NEW   = int(os.environ.get("METRICS_MAX_NEW", "60"))
 
 INTERVALS_BASE = "https://intervals.icu/api/v1"
-MELBOURNE = dt.timezone(dt.timedelta(hours=10))
+MELBOURNE = ZoneInfo("Australia/Melbourne")   # DST-aware (AEST/AEDT)
 JSON_BUDGET = 8500
 SECTION = "detail_metrics"
 AERO_TYPES = {"run": "Run", "ride": "Ride", "virtualride": "VirtualRide"}
@@ -165,10 +166,11 @@ def _chunk_items(items):
 
 
 def write_section(section, items, doc_id, blocks):
+    # Post-then-delete (as coach.py): a failed post leaves the old blocks in
+    # place; a failed delete is cleaned up by the next write.
     old_ids = [b.get("id") for b in blocks
                if (_extract_json(b.get("markdown", "")) or {}).get("_section")
                == section]
-    craft_delete(old_ids)
     stamp = dt.datetime.now(MELBOURNE).isoformat(timespec="seconds")
     for i, chunk in enumerate(_chunk_items(list(items))):
         payload = {"_section": section, "_part": i,
@@ -176,6 +178,7 @@ def write_section(section, items, doc_id, blocks):
         craft_post("```json\n"
                    + json.dumps(payload, separators=(",", ":"))
                    + "\n```", doc_id)
+    craft_delete(old_ids)
 
 
 # ---- Log index refresh (as coach.py; keep the three in sync) -------------
@@ -254,10 +257,10 @@ def refresh_index(doc_id):
                    "today": {"date": today_iso,
                              "hash": _today_content_hash(blocks, today_iso)},
                    "parts": parts}
-        craft_delete(old_ids)
         craft_post("```json\n"
                    + json.dumps(payload, separators=(",", ":"))
                    + "\n```", doc_id)
+        craft_delete(old_ids)   # post-then-delete, as write_section
         print(f"log_index refreshed "
               f"({sum(len(v) for v in parts.values())} part blocks).")
     except Exception as e:  # noqa: BLE001

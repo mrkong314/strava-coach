@@ -32,6 +32,7 @@ import time
 import argparse
 import datetime as dt
 import hashlib
+from zoneinfo import ZoneInfo
 
 import requests
 
@@ -45,7 +46,7 @@ HEVY_HEADERS = {"api-key": HEVY_API_KEY or "", "Content-Type": "application/json
 
 CRAFT_API_BASE = (os.environ.get("CRAFT_API_BASE") or "").rstrip("/")
 
-MELBOURNE = dt.timezone(dt.timedelta(hours=10))
+MELBOURNE = ZoneInfo("Australia/Melbourne")   # DST-aware (AEST/AEDT)
 JSON_BUDGET = 8500          # Craft caps a block ~10000 chars; stay under
 GYM_SECTION = "detail_gym"  # managed section name in the Training Log
 PULL_LOOKBACK_DAYS = 21     # how far back the pull considers workouts
@@ -339,14 +340,16 @@ def _chunk_items(items):
 
 
 def write_section(section, items, doc_id, blocks):
+    # Post-then-delete (as coach.py): a failed post leaves the old blocks in
+    # place; a failed delete is cleaned up by the next write.
     old_ids = [b.get("id") for b in blocks
                if (_extract_json(b.get("markdown", "")) or {}).get("_section") == section]
-    craft_delete(old_ids)
     stamp = dt.datetime.now(MELBOURNE).isoformat(timespec="seconds")
     for i, chunk in enumerate(_chunk_items(list(items))):
         payload = {"_section": section, "_part": i, "_updated": stamp, "items": chunk}
         markdown = "```json\n" + json.dumps(payload, separators=(",", ":")) + "\n```"
         craft_post(markdown, doc_id)
+    craft_delete(old_ids)
 
 
 # --------------------------------------------------------------------------
@@ -441,10 +444,10 @@ def refresh_index(doc_id):
                       "hash": _today_content_hash(blocks, today_iso)},
             "parts": parts,
         }
-        craft_delete(old_ids)
         craft_post("```json\n"
                    + json.dumps(payload, separators=(",", ":"))
                    + "\n```", doc_id)
+        craft_delete(old_ids)   # post-then-delete, as write_section
         print(f"log_index refreshed ({sum(len(v) for v in parts.values())} "
               f"part blocks indexed).")
     except Exception as e:  # noqa: BLE001 - index is best-effort
