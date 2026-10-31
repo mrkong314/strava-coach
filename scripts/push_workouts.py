@@ -7,11 +7,18 @@ What it does, once per run:
   1. Reads events from the "Workout Planning" Google Calendar over a forward
      window (today .. today + WINDOW_DAYS).
   2. Keeps only FUTURE, PLANNED-format events (two gates -- see should_push).
-  3. Builds an intervals.icu WORKOUT event for each, keyed by external_id
+  3. Drops today's events whose discipline is already completed: intervals.icu
+     activities recorded today are counted per discipline group, and today's
+     planned sessions of that group are treated as done only once the activity
+     count reaches the planned count (so a double day stays planned until both
+     sessions exist).
+  4. Builds an intervals.icu WORKOUT event for each, keyed by external_id
      derived from the Google Calendar event id.
-  4. Reconciles against intervals.icu over the same window: create new, update
-     changed, skip unchanged, and delete intervals workouts this script
-     previously created whose source calendar event has gone.
+  5. Reconciles against intervals.icu over the window plus PAST_DAYS back:
+     create new, update changed, skip unchanged, and delete intervals workouts
+     this script previously created whose source calendar event has gone or
+     whose date/discipline is completed. Workouts intervals.icu has paired
+     with an activity are never updated or deleted.
 
 It is idempotent: running it repeatedly converges to the same state with no
 duplicates. It only ever touches intervals events whose external_id carries our
@@ -30,6 +37,8 @@ Auth / config come from environment variables (see README):
   GOOGLE_CREDENTIALS_FILE   path to the service-account JSON file
 Optional:
   WINDOW_DAYS            forward window, default 14
+  PAST_DAYS              how far back owned workouts are reconciled (unpaired
+                         ones on past dates are deleted), default 7
   DRY_RUN                "1" to log actions without writing to intervals.icu
   TZID                   IANA tz that defines "today" and the calendar
                          window boundaries (GitHub runners are UTC), default
@@ -43,6 +52,7 @@ import json
 import base64
 import hashlib
 import datetime as dt
+from collections import Counter
 from typing import Optional
 from zoneinfo import ZoneInfo
 
@@ -61,6 +71,7 @@ except ImportError:
 INTERVALS_BASE = "https://intervals.icu/api/v1"
 EXTERNAL_ID_PREFIX = "wkplan-"          # marks events THIS script owns
 WINDOW_DAYS = int(os.environ.get("WINDOW_DAYS", "14"))
+PAST_DAYS = int(os.environ.get("PAST_DAYS", "7"))
 DRY_RUN = os.environ.get("DRY_RUN", "") == "1"
 TZID = os.environ.get("TZID", "Australia/Melbourne")
 
@@ -70,6 +81,20 @@ TYPE_RUN = "Run"
 TYPE_SWIM = "Swim"
 TYPE_WEIGHTS = "WeightTraining"
 TYPE_OTHER = "Workout"
+
+# intervals.icu activity type -> the planned type we emit, so a VirtualRide
+# completes a planned Ride and a TrailRun completes a planned Run.
+_TYPE_GROUP = {
+    "Ride": TYPE_RIDE, "VirtualRide": TYPE_RIDE, "GravelRide": TYPE_RIDE,
+    "MountainBikeRide": TYPE_RIDE, "EBikeRide": TYPE_RIDE,
+    "Run": TYPE_RUN, "VirtualRun": TYPE_RUN, "TrailRun": TYPE_RUN,
+    "Swim": TYPE_SWIM, "OpenWaterSwim": TYPE_SWIM,
+    "WeightTraining": TYPE_WEIGHTS,
+}
+
+
+def type_group(t: Optional[str]) -> str:
+    return _TYPE_GROUP.get(t or "", t or "")
 
 # First-token keywords that mark a parseable endurance workout description.
 # intervals.icu step syntax begins with a discipline word or a step header.
@@ -348,8 +373,20 @@ class Intervals:
             # field set does not reliably include it; without it every owned
             # workout is invisible to the reconcile and gets re-created each
             # run (the duplicate pile-up).
-            "fields": "id,external_id,name,description,type,start_date_local",
+            # paired_activity_id tells us intervals.icu has matched the
+            # workout to a completed activity; such workouts are left alone.
+            "fields": "id,external_id,name,description,type,start_date_local,"
+                      "paired_activity_id",
         }
+        r = self.session.get(url, params=params, timeout=30)
+        r.raise_for_status()
+        return r.json()
+
+    def list_activities(self, start: dt.date, end: dt.date):
+        """Activities with a local start date in [start, end] inclusive."""
+        url = f"{INTERVALS_BASE}/athlete/{self.athlete}/activities"
+        params = {"oldest": start.isoformat(),
+                  "newest": f"{end.isoformat()}T23:59:59"}
         r = self.session.get(url, params=params, timeout=30)
         r.raise_for_status()
         return r.json()
@@ -389,26 +426,50 @@ def main() -> int:
 
     today = dt.datetime.now(ZoneInfo(TZID)).date()   # local date, not UTC
     end = today + dt.timedelta(days=WINDOW_DAYS)
-    log(f"[push] window {today} .. {end}  (dry_run={DRY_RUN})")
+    past_start = today - dt.timedelta(days=PAST_DAYS)
+    log(f"[push] window {today} .. {end}, reconcile back to {past_start}  "
+        f"(dry_run={DRY_RUN})")
 
     # ---- read calendar
     svc = gcal_service()
     raw_events = read_calendar_window(svc, calendar_id, today, end)
     log(f"[push] calendar returned {len(raw_events)} events in window")
 
+    icu = Intervals(athlete_id, api_key)
+
+    # ---- completion signal: activities already recorded today in intervals.icu,
+    # counted per discipline group. Today's planned sessions of a group count
+    # as done only once the activity count reaches the planned count, so a
+    # double day (two rides) stays planned until both rides exist.
+    done_today = Counter(type_group(a.get("type"))
+                         for a in icu.list_activities(today, today))
+    log(f"[push] completed today: {dict(done_today) or 'none'}")
+
+    candidates = [(ev, build_payload(ev)) for ev in raw_events
+                  if should_push(ev, today)]
+    planned_today = Counter(type_group(p["type"]) for ev, p in candidates
+                            if event_date(ev) == today)
+
     desired = {}     # external_id -> payload
-    for ev in raw_events:
-        if should_push(ev, today):
-            pid = external_id_for(ev)
-            desired[pid] = build_payload(ev)
-    log(f"[push] {len(desired)} events pass the gates (future + planned format)")
+    completed = 0
+    for ev, payload in candidates:
+        grp = type_group(payload["type"])
+        if event_date(ev) == today and done_today[grp] >= planned_today[grp]:
+            log(f"  = done   {today} {payload['type']:14} {payload['name'][:48]} "
+                f"({done_today[grp]}/{planned_today[grp]} {grp})")
+            completed += 1
+            continue                      # gate 3: today's session completed
+        desired[external_id_for(ev)] = payload
+    log(f"[push] {len(desired)} events pass the gates (future + planned format), "
+        f"{completed} completed today")
 
     # ---- read intervals existing (only ones we own), grouped by external_id.
     # A dict keyed on external_id would collapse a duplicate pile to one entry,
     # hiding the extras from reconcile -- which is how a pile can never shrink.
     # Group into lists so we can see and collapse duplicates below.
-    icu = Intervals(athlete_id, api_key)
-    existing_all = icu.list_events(today, end)
+    # The read reaches PAST_DAYS back so owned workouts on past dates are
+    # reconciled too (unpaired ones deleted, paired ones kept).
+    existing_all = icu.list_events(past_start, end)
     existing = {}    # external_id -> list[event]
     for e in existing_all:
         eid = e.get("external_id") or ""
@@ -419,7 +480,7 @@ def main() -> int:
     log(f"[push] intervals has {owned_count} workouts we own in window "
         f"across {len(existing)} ids ({dup_ids} with duplicates)")
 
-    created = updated = skipped = deleted = 0
+    created = updated = skipped = deleted = kept = 0
 
     # ---- create / update, collapsing any duplicate pile to a single event
     for pid, payload in desired.items():
@@ -430,14 +491,18 @@ def main() -> int:
                 icu.create(payload)
             created += 1
             continue
-        # keep the first match; delete any extras (the pile)
-        keep = matches[0]
-        for extra in matches[1:]:
+        # keep a paired match if there is one, else the first; delete extras
+        keep = next((m for m in matches if m.get("paired_activity_id")), matches[0])
+        for extra in matches:
+            if extra is keep:
+                continue
             log(f"  - dedup  {(extra.get('start_date_local') or '')[:10]} {extra.get('name','')[:48]}")
             if not DRY_RUN:
                 icu.delete(extra["id"])
             deleted += 1
-        if payload_differs(keep, payload):
+        if keep.get("paired_activity_id"):
+            kept += 1                     # never touch a paired workout
+        elif payload_differs(keep, payload):
             log(f"  ~ update {payload['start_date_local'][:10]} {payload['type']:14} {payload['name'][:48]}")
             if not DRY_RUN:
                 icu.update(keep["id"], payload)
@@ -445,17 +510,22 @@ def main() -> int:
         else:
             skipped += 1
 
-    # ---- delete ours that no longer have a source event (all copies)
+    # ---- delete ours that no longer have a source event, are past-dated, or
+    # are completed today (all copies), except any intervals.icu has paired
     for pid, matches in existing.items():
         if pid not in desired:
             for ev in matches:
+                if ev.get("paired_activity_id"):
+                    log(f"  = keep   {(ev.get('start_date_local') or '')[:10]} {ev.get('name','')[:48]} (paired)")
+                    kept += 1
+                    continue
                 log(f"  - delete {(ev.get('start_date_local') or '')[:10]} {ev.get('name','')[:48]}")
                 if not DRY_RUN:
                     icu.delete(ev["id"])
                 deleted += 1
 
     log(f"[push] done: created={created} updated={updated} "
-        f"skipped={skipped} deleted={deleted}")
+        f"skipped={skipped} deleted={deleted} kept_paired={kept}")
     return 0
 
 
