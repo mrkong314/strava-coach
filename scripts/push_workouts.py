@@ -188,6 +188,17 @@ def infer_type(summary: str, description: str) -> str:
     d = (description or "").lower()
     if is_gym(summary, description):
         return TYPE_WEIGHTS
+    # The summary and the "Name:" line lead with the discipline ("Run - Brick
+    # 15min off the bike"). Trust that leading word before any keyword search,
+    # otherwise "bike" later in the text turns a run into a Ride.
+    for text in (s, (name_from_description(description) or "").lower()):
+        lead = text.split()[0].strip("-:") if text.split() else ""
+        if lead in ("ride", "bike", "cycle", "cycling"):
+            return TYPE_RIDE
+        if lead == "swim":
+            return TYPE_SWIM
+        if lead == "run":
+            return TYPE_RUN
     first = d.strip().split()[0] if d.strip() else ""
     if first == "ride" or "ride" in s or "bike" in s or "cycl" in s:
         return TYPE_RIDE
