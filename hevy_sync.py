@@ -555,10 +555,11 @@ def run_pull():
 # --------------------------------------------------------------------------
 # PUSH : calendar [HEVY-ROUTINE] blocks -> Hevy routine slots
 # --------------------------------------------------------------------------
-# One routine object per gym day ("slot"), found by a marker in its notes
-# (never by title, which rotates). Each run points every slot at the earliest
-# planned session for that day, dated today or later, that has not yet been
-# logged. "Logged" = a recent Hevy workout started from the slot's routine on
+# One routine object per gym day ("slot"), found by "Day N" in its title
+# (the slot marker is also written to routine notes, but Hevy's routine GET
+# does not return routine-level notes, so the title is what identifies a
+# slot). Each run points every slot at the earliest planned session for that
+# day, dated today or later, that has not yet been logged. "Logged" = a recent Hevy workout started from the slot's routine on
 # the session's date, or (transition from the old one-routine-per-session
 # scheme) a workout whose title equals the session title on that date.
 
@@ -579,8 +580,13 @@ def slot_notes(slot, title):
 
 
 def slot_of_routine(routine):
+    """Slot a Hevy routine belongs to: the notes marker when Hevy happens to
+    return notes, else Day N in the title. Any routine with Day N in its title
+    is therefore a slot candidate; keep hand-made routine titles free of it."""
     m = _MARKER_RE.search(routine.get("notes") or "")
-    return m.group(1).lower() if m else None
+    if m:
+        return m.group(1).lower()
+    return slot_for_title(routine.get("title"))
 
 
 def _event_date(ev):
@@ -699,13 +705,22 @@ def run_push(dry_run=False):
     for sessions in planned.values():
         sessions.sort(key=lambda x: x[0])
 
-    # Existing slot routines (by notes marker; first wins if duplicated) and
-    # recently logged workouts, keyed two ways for the done check.
-    slots = {}
+    # Existing slot routines. If several routines claim the same slot (e.g.
+    # the pile created while slot lookup was broken), the oldest is the slot
+    # and the rest are reported for manual deletion: the API cannot delete.
+    by_slot = {}
     for r in hevy_list_routines():
         slot = slot_of_routine(r)
-        if slot and slot not in slots:
-            slots[slot] = r
+        if slot:
+            by_slot.setdefault(slot, []).append(r)
+    slots = {}
+    for slot, rs in by_slot.items():
+        rs.sort(key=lambda r: (r.get("created_at") or "", str(r.get("id"))))
+        slots[slot] = rs[0]
+        for extra in rs[1:]:
+            print(f"  slot {slot}: extra routine '{extra.get('title')}' "
+                  f"(id {extra.get('id')}) ignored; delete it by hand in the app")
+    # Recently logged workouts, keyed two ways for the done check.
     done_rid, done_title = set(), set()
     for w in hevy_recent_workouts():
         d = _workout_local_date(w)

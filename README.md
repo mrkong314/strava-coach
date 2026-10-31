@@ -147,8 +147,12 @@ Hevy's public API has no DELETE for routines or routine folders, and
 `folder_id` is rejected on update, so a routine can never be removed or moved
 once created. Creating one routine per dated session therefore left every past
 session in the app forever. The push instead keeps **one routine object per gym
-day**, a slot (`day1`, `day2`, ...), identified by a marker in its notes:
-`[wkplan-slot day1] <title>`. Each run points every slot at the earliest
+day**, a slot (`day1`, `day2`, ...), identified by `Day N` in its title (a
+`[wkplan-slot day1] <title>` marker is also written to the routine notes, but
+Hevy's routine GET does not return routine-level notes, so the title is what
+identifies a slot; keep hand-made routine titles free of `Day N`). If several
+routines claim one slot the oldest is used and the others are logged for manual
+deletion. Each run points every slot at the earliest
 planned session for that day, dated today or later, that has not been logged.
 "Logged" means a Hevy workout in the last 21 days started from that slot's
 routine (`routine_id`) on the session's date, or, for the transition from the
@@ -160,9 +164,9 @@ started from it carries that title into `detail_gym`; only the routine count
 stays fixed. The slot is derived from `Day N` in the `title=` line; a block
 whose title has no `Day N` is skipped and logged. When every planned session in
 the window is logged the slot is left as is. Routines are only written when
-their content differs from what Hevy holds. Routines created before this
-scheme (anything without the notes marker) are never touched and are deleted by
-hand in the app; the push never recreates them.
+their content differs from what Hevy holds. Routines whose title has no `Day N`
+are never touched; stale ones are deleted by hand in the app, and the push never
+recreates them.
 
 ### Additional secrets for Hevy sync
 - `HEVY_API_KEY` - Hevy Pro API key (hevy.com/settings?developer)
