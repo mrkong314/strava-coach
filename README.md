@@ -127,15 +127,41 @@ Separate pipeline for strength training, independent of `coach.py`. Two modes:
 
 - **pull** - reads completed workouts from Hevy and writes them into the Craft
   Training Log as a `detail_gym` JSON section (same chunked-codeblock mechanism
-  `coach.py` uses). Dedup by workout id; only writes on new/changed data, so it
+  `coach.py` uses). Each item carries `routine_id` when the workout was started
+  from a routine. Dedup by workout id; only writes on new/changed data, so it
   is safe on a 30-min cron. `hevy_sync.py --mode pull`
-- **push** - reads gym events on the Workout Planning calendar whose description
-  holds a `[HEVY-ROUTINE]` block and creates/updates those routines in Hevy.
-  Run once per block from the Actions tab. `hevy_sync.py --mode push`
+- **push** - reads gym events on the Workout Planning calendar (today to 28
+  days ahead) whose description holds a `[HEVY-ROUTINE]` block and keeps one
+  Hevy routine per gym day up to date with the next uncompleted session (see
+  Routine slots below). Runs on the cron; `--dry-run` logs the slot decisions
+  and writes nothing. `hevy_sync.py --mode push [--dry-run]`
 
-Runs from the Actions tab (the `Hevy Sync` workflow, `workflow_dispatch` with a
-`mode` input) and via cron-job.org for the 30-min pull (POST to the workflow
-dispatch endpoint with body `{"ref":"main","inputs":{"mode":"pull"}}`).
+Runs from the Actions tab (the `Hevy Sync` workflow, `workflow_dispatch` with
+`mode` and `dry_run` inputs) and via cron-job.org (POST to the workflow
+dispatch endpoint with body `{"ref":"main","inputs":{"mode":"pull"}}` or
+`{"mode":"push"}`).
+
+### Routine slots (why old routines no longer pile up)
+Hevy's public API has no DELETE for routines or routine folders, and
+`folder_id` is rejected on update, so a routine can never be removed or moved
+once created. Creating one routine per dated session therefore left every past
+session in the app forever. The push instead keeps **one routine object per gym
+day**, a slot (`day1`, `day2`, ...), identified by a marker in its notes:
+`[wkplan-slot day1] <title>`. Each run points every slot at the earliest
+planned session for that day, dated today or later, that has not been logged.
+"Logged" means a Hevy workout in the last 21 days started from that slot's
+routine (`routine_id`) on the session's date, or, for the transition from the
+old scheme, a workout whose title equals the session title on that date.
+
+The slot's title and exercises are rewritten in place, so the app still shows
+the full dated title (`26.11.03 Gym Lower - Day 1 (W4 deload)`) and the workout
+started from it carries that title into `detail_gym`; only the routine count
+stays fixed. The slot is derived from `Day N` in the `title=` line; a block
+whose title has no `Day N` is skipped and logged. When every planned session in
+the window is logged the slot is left as is. Routines are only written when
+their content differs from what Hevy holds. Routines created before this
+scheme (anything without the notes marker) are never touched and are deleted by
+hand in the app; the push never recreates them.
 
 ### Additional secrets for Hevy sync
 - `HEVY_API_KEY` - Hevy Pro API key (hevy.com/settings?developer)
@@ -155,7 +181,7 @@ One exercise per line, pipe-delimited:
   skipped. `weight_kg` is a float, or blank for bodyweight lifts (and is omitted
   for any `template_id` in `REPS_ONLY_IDS`). `note` is optional; a literal `@`
   in a note is stripped because it 400s in Hevy notes.
-- A `title=...` line sets the routine title (used as the find-or-update key).
+- A `title=...` line sets the routine title. `Day N` in it selects the slot.
 
 ### Hevy create vs update asymmetry (important)
 The Hevy routine `POST` (create) and `PUT` (update) endpoints do **not** accept
@@ -163,7 +189,7 @@ the same body. Fields that are fine on create are rejected on update. Known so
 far, both handled in the code:
 
 - `routine.notes` must be non-empty on `PUT` ("not allowed to be empty").
-  `parse_hevy_block` defaults `notes` to the routine title.
+  The push sets `notes` to the slot marker plus the title.
 - `routine.folder_id` is rejected entirely on `PUT` ("not allowed"). `run_push`
   strips `folder_id` from the body before the `PUT`; the `POST` path keeps it.
 
