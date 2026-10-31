@@ -5,9 +5,15 @@ Two modes, selected with --mode:
 
   push : Read planned gym sessions from the Workout Planning Google Calendar.
          Each gym event's description carries a [HEVY-ROUTINE] block (compact
-         pipe-delimited syntax). Parse it and create/update the routine in Hevy
-         via the Hevy API. Only events whose description contains
-         [HEVY-ROUTINE] are touched, so runs/rides/XC are ignored.
+         pipe-delimited syntax). Hevy's public API has no DELETE for routines,
+         so instead of one routine per dated session (which piles up in the
+         app forever) the push keeps ONE routine object per gym day, a "slot"
+         (Day 1, Day 2, ...), and rewrites it in place with the next
+         uncompleted session for that day. The slot's title rotates through
+         the dated titles, so the app still shows "26.11.03 Gym Lower - Day 1
+         (W4 deload)"; only the routine count stays fixed. Only events whose
+         description contains [HEVY-ROUTINE] are read, so runs/rides/XC are
+         ignored. --dry-run logs what each slot would take and writes nothing.
 
   pull : Read completed workouts from Hevy (GET /v1/workouts), and write them
          into the Craft Training Log as a managed JSON section (_section
@@ -32,6 +38,7 @@ import time
 import argparse
 import datetime as dt
 import hashlib
+from zoneinfo import ZoneInfo
 
 import requests
 
@@ -45,7 +52,7 @@ HEVY_HEADERS = {"api-key": HEVY_API_KEY or "", "Content-Type": "application/json
 
 CRAFT_API_BASE = (os.environ.get("CRAFT_API_BASE") or "").rstrip("/")
 
-MELBOURNE = dt.timezone(dt.timedelta(hours=10))
+MELBOURNE = ZoneInfo("Australia/Melbourne")   # DST-aware (AEST/AEDT)
 JSON_BUDGET = 8500          # Craft caps a block ~10000 chars; stay under
 GYM_SECTION = "detail_gym"  # managed section name in the Training Log
 PULL_LOOKBACK_DAYS = 21     # how far back the pull considers workouts
@@ -143,6 +150,17 @@ def _round_2p5(kg):
 
 def today_mel():
     return dt.datetime.now(MELBOURNE).date()
+
+
+def _workout_local_date(w):
+    """Melbourne date a Hevy workout started. Hevy start_time is UTC, so a
+    naive [:10] slice dates an early-morning session to the previous day."""
+    try:
+        return (dt.datetime.fromisoformat((w.get("start_time") or "")
+                                          .replace("Z", "+00:00"))
+                .astimezone(MELBOURNE).date())
+    except ValueError:
+        return None
 
 
 # --------------------------------------------------------------------------
@@ -339,14 +357,16 @@ def _chunk_items(items):
 
 
 def write_section(section, items, doc_id, blocks):
+    # Post-then-delete (as coach.py): a failed post leaves the old blocks in
+    # place; a failed delete is cleaned up by the next write.
     old_ids = [b.get("id") for b in blocks
                if (_extract_json(b.get("markdown", "")) or {}).get("_section") == section]
-    craft_delete(old_ids)
     stamp = dt.datetime.now(MELBOURNE).isoformat(timespec="seconds")
     for i, chunk in enumerate(_chunk_items(list(items))):
         payload = {"_section": section, "_part": i, "_updated": stamp, "items": chunk}
         markdown = "```json\n" + json.dumps(payload, separators=(",", ":")) + "\n```"
         craft_post(markdown, doc_id)
+    craft_delete(old_ids)
 
 
 # --------------------------------------------------------------------------
@@ -441,10 +461,10 @@ def refresh_index(doc_id):
                       "hash": _today_content_hash(blocks, today_iso)},
             "parts": parts,
         }
-        craft_delete(old_ids)
         craft_post("```json\n"
                    + json.dumps(payload, separators=(",", ":"))
                    + "\n```", doc_id)
+        craft_delete(old_ids)   # post-then-delete, as write_section
         print(f"log_index refreshed ({sum(len(v) for v in parts.values())} "
               f"part blocks indexed).")
     except Exception as e:  # noqa: BLE001 - index is best-effort
@@ -457,13 +477,16 @@ def refresh_index(doc_id):
 
 def trim_workout(w):
     """Reduce a Hevy workout to the fields the Log needs for progression."""
+    local = _workout_local_date(w)
     out = {
         "id": w.get("id"),
-        "date": (w.get("start_time", "") or "")[:10],
+        "date": local.isoformat() if local else (w.get("start_time") or "")[:10],
         "title": w.get("title"),
         "updated_at": w.get("updated_at"),
         "exercises": [],
     }
+    if w.get("routine_id"):          # empty string on ad hoc workouts
+        out["routine_id"] = w["routine_id"]
     for ex in w.get("exercises", []) or []:
         tid = ex.get("exercise_template_id")
         name = ID_TO_NAME.get(tid, ex.get("title") or tid)
@@ -486,10 +509,12 @@ def trim_workout(w):
 
 
 def _workout_hash(item):
-    """Stable hash of the meaningful content, to detect edited workouts."""
+    """Stable hash of the meaningful content, to detect edited workouts.
+    Includes the stored date so a change in how it is derived propagates."""
     payload = json.dumps(item.get("exercises", []), sort_keys=True,
                          separators=(",", ":"))
-    return hashlib.sha1((payload + str(item.get("updated_at"))).encode()).hexdigest()[:12]
+    return hashlib.sha1((payload + str(item.get("updated_at"))
+                         + str(item.get("date"))).encode()).hexdigest()[:12]
 
 
 def run_pull():
@@ -528,8 +553,61 @@ def run_pull():
 
 
 # --------------------------------------------------------------------------
-# PUSH : calendar [HEVY-ROUTINE] blocks -> Hevy routines
+# PUSH : calendar [HEVY-ROUTINE] blocks -> Hevy routine slots
 # --------------------------------------------------------------------------
+# One routine object per gym day ("slot"), found by a marker in its notes
+# (never by title, which rotates). Each run points every slot at the earliest
+# planned session for that day, dated today or later, that has not yet been
+# logged. "Logged" = a recent Hevy workout started from the slot's routine on
+# the session's date, or (transition from the old one-routine-per-session
+# scheme) a workout whose title equals the session title on that date.
+
+PUSH_WINDOW_DAYS = 28
+SLOT_MARKER = "[wkplan-slot"                  # notes: "[wkplan-slot day1] <title>"
+_SLOT_RE = re.compile(r"\bday\s*(\d+)\b", re.IGNORECASE)
+_MARKER_RE = re.compile(r"\[wkplan-slot\s+(day\d+)\]", re.IGNORECASE)
+
+
+def slot_for_title(title):
+    """'26.11.03 Gym Lower - Day 1 (W4 deload)' -> 'day1'; None if no Day N."""
+    m = _SLOT_RE.search(title or "")
+    return f"day{int(m.group(1))}" if m else None
+
+
+def slot_notes(slot, title):
+    return f"{SLOT_MARKER} {slot}] {title}"
+
+
+def slot_of_routine(routine):
+    m = _MARKER_RE.search(routine.get("notes") or "")
+    return m.group(1).lower() if m else None
+
+
+def _event_date(ev):
+    """Melbourne date of a calendar event (all-day or timed)."""
+    start = ev.get("start") or {}
+    if start.get("date"):
+        return dt.date.fromisoformat(start["date"])
+    if start.get("dateTime"):
+        return (dt.datetime.fromisoformat(start["dateTime"].replace("Z", "+00:00"))
+                .astimezone(MELBOURNE).date())
+    return None
+
+
+def _routine_sig(routine):
+    """Canonical form for change detection, tolerant of the extra read-only
+    fields Hevy returns on GET (index, title per exercise, superset_id, ...)."""
+    exs = []
+    for ex in routine.get("exercises") or []:
+        sets = []
+        for st in ex.get("sets") or []:
+            w = st.get("weight_kg")
+            sets.append((st.get("type") or "normal", st.get("reps"),
+                         None if w is None else round(float(w), 2)))
+        exs.append((ex.get("exercise_template_id"), ex.get("rest_seconds"),
+                    ex.get("notes") or None, tuple(sets)))
+    return (routine.get("title"), routine.get("notes") or "", tuple(exs))
+
 
 def parse_hevy_block(description):
     m = re.search(r"\[HEVY-ROUTINE\](.*?)\[/HEVY-ROUTINE\]", description or "",
@@ -591,7 +669,7 @@ def _calendar_service():
     return build("calendar", "v3", credentials=creds, cache_discovery=False)
 
 
-def run_push():
+def run_push(dry_run=False):
     if not HEVY_API_KEY:
         raise RuntimeError("HEVY_API_KEY not set.")
     cal_id = os.environ["GCAL_CALENDAR_ID"]
@@ -599,32 +677,79 @@ def run_push():
 
     today = today_mel()
     time_min = dt.datetime.combine(today, dt.time.min, MELBOURNE).isoformat()
-    time_max = dt.datetime.combine(today + dt.timedelta(days=28),
+    time_max = dt.datetime.combine(today + dt.timedelta(days=PUSH_WINDOW_DAYS),
                                    dt.time.max, MELBOURNE).isoformat()
     events = svc.events().list(calendarId=cal_id, timeMin=time_min,
                                timeMax=time_max, singleEvents=True,
                                orderBy="startTime", maxResults=200).execute().get("items", [])
 
-    existing = {r.get("title"): r for r in hevy_list_routines()}
-    created, updated, skipped = 0, 0, 0
+    # Planned sessions in the window, grouped by slot, soonest first.
+    planned, skipped = {}, 0
     for ev in events:
-        routine = parse_hevy_block(ev.get("description", ""))
-        if not routine:
+        parsed = parse_hevy_block(ev.get("description", ""))
+        if not parsed:
             continue
-        title = routine["routine"]["title"]
-        if title in existing:
-            rid = existing[title].get("id")
-            # Hevy rejects folder_id on the update endpoint ("not allowed"),
-            # though it is accepted on create. Strip it for the PUT only.
-            update_body = {"routine": {k: v
-                                       for k, v in routine["routine"].items()
-                                       if k != "folder_id"}}
-            hevy_put(f"/routines/{rid}", update_body)
-            updated += 1
-        else:
-            hevy_post("/routines", routine)
+        body = parsed["routine"]
+        slot, date = slot_for_title(body["title"]), _event_date(ev)
+        if not slot or not date:
+            print(f"  skip (no 'Day N' in title, or undated): {body['title']}")
+            skipped += 1
+            continue
+        planned.setdefault(slot, []).append((date, body["title"], body))
+    for sessions in planned.values():
+        sessions.sort(key=lambda x: x[0])
+
+    # Existing slot routines (by notes marker; first wins if duplicated) and
+    # recently logged workouts, keyed two ways for the done check.
+    slots = {}
+    for r in hevy_list_routines():
+        slot = slot_of_routine(r)
+        if slot and slot not in slots:
+            slots[slot] = r
+    done_rid, done_title = set(), set()
+    for w in hevy_recent_workouts():
+        d = _workout_local_date(w)
+        if not d:
+            continue
+        if w.get("routine_id"):
+            done_rid.add((w["routine_id"], d))
+        if w.get("title"):
+            done_title.add((w["title"].strip(), d))
+
+    created = updated = unchanged = idle = 0
+    for slot, sessions in sorted(planned.items()):
+        cur = slots.get(slot)
+        rid = cur.get("id") if cur else None
+        nxt = next(((date, title, body) for date, title, body in sessions
+                    if (rid, date) not in done_rid
+                    and (title, date) not in done_title), None)
+        if nxt is None:
+            print(f"  slot {slot}: all {len(sessions)} planned session(s) in "
+                  f"window already logged; left as is")
+            idle += 1
+            continue
+        date, title, body = nxt
+        desired = dict(body, notes=slot_notes(slot, title))
+        if cur is None:
+            print(f"  + create slot {slot} <- {date} {title}")
+            if not dry_run:
+                hevy_post("/routines", {"routine": desired})
             created += 1
-    print(f"Push complete: {created} created, {updated} updated, {skipped} skipped.")
+        elif _routine_sig(cur) == _routine_sig(desired):
+            unchanged += 1
+        else:
+            print(f"  ~ update slot {slot} <- {date} {title}")
+            if not dry_run:
+                # Hevy rejects folder_id on the update endpoint ("not
+                # allowed"), though it is accepted on create. Strip it for
+                # the PUT only.
+                update_body = {"routine": {k: v for k, v in desired.items()
+                                           if k != "folder_id"}}
+                hevy_put(f"/routines/{rid}", update_body)
+            updated += 1
+    print(f"Push complete{' (dry run, nothing written)' if dry_run else ''}: "
+          f"{created} created, {updated} updated, {unchanged} unchanged, "
+          f"{idle} idle slot(s), {skipped} event(s) skipped.")
 
 
 # --------------------------------------------------------------------------
@@ -632,11 +757,13 @@ def run_push():
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--mode", required=True, choices=["pull", "push"])
+    ap.add_argument("--dry-run", action="store_true",
+                    help="push only: log what each slot would take, write nothing")
     args = ap.parse_args()
     if args.mode == "pull":
         run_pull()
     else:
-        run_push()
+        run_push(dry_run=args.dry_run)
 
 
 if __name__ == "__main__":

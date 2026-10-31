@@ -48,6 +48,7 @@ import json
 import argparse
 import hashlib
 import datetime as dt
+from zoneinfo import ZoneInfo
 
 import requests
 
@@ -61,7 +62,7 @@ CRAFT_API_BASE       = os.environ["CRAFT_API_BASE"].rstrip("/")
 
 INTERVALS_BASE = "https://intervals.icu/api/v1"
 
-MELBOURNE = dt.timezone(dt.timedelta(hours=10))
+MELBOURNE = ZoneInfo("Australia/Melbourne")   # DST-aware (AEST/AEDT)
 
 DETAIL_DAYS = 90
 
@@ -333,11 +334,15 @@ def _chunk_items(items):
 
 
 def write_section(section, items, doc_id, blocks):
-    """Delete a section's existing sub-blocks and write it fresh, chunked."""
+    """Write a section fresh, chunked, then delete its previous sub-blocks.
+
+    Post-then-delete: if a post fails part-way the old blocks survive, so an
+    append-only section (weekly, events) is never lost to a transient Craft
+    error. A failed delete leaves old and new parts side by side until the
+    next write, which captures and removes both."""
     old_ids = [b.get("id") for b in blocks
                if (_extract_json(b.get("markdown", "")) or {}).get("_section")
                == section]
-    craft_delete(old_ids)
     stamp = dt.datetime.now(MELBOURNE).isoformat(timespec="seconds")
     for i, chunk in enumerate(_chunk_items(list(items))):
         payload = {"_section": section, "_part": i,
@@ -346,6 +351,7 @@ def write_section(section, items, doc_id, blocks):
                     + json.dumps(payload, separators=(",", ":"))
                     + "\n```")
         craft_post(markdown, doc_id)
+    craft_delete(old_ids)
 
 
 # --------------------------------------------------------------------------
@@ -440,10 +446,10 @@ def refresh_index(doc_id):
                       "hash": _today_content_hash(blocks, today_iso)},
             "parts": parts,
         }
-        craft_delete(old_ids)
         craft_post("```json\n"
                    + json.dumps(payload, separators=(",", ":"))
                    + "\n```", doc_id)
+        craft_delete(old_ids)   # post-then-delete, as write_section
         print(f"log_index refreshed ({sum(len(v) for v in parts.values())} "
               f"part blocks indexed).")
     except Exception as e:  # noqa: BLE001 - index is best-effort

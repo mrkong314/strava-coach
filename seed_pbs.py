@@ -45,6 +45,7 @@ import json
 import time
 import argparse
 import datetime as dt
+from zoneinfo import ZoneInfo
 
 import requests
 
@@ -59,7 +60,7 @@ STRAVA_REFRESH_TOKEN = os.environ.get("STRAVA_REFRESH_TOKEN")
 INTERVALS_BASE = "https://intervals.icu/api/v1"
 STRAVA_BASE    = "https://www.strava.com/api/v3"
 
-MELBOURNE = dt.timezone(dt.timedelta(hours=10))
+MELBOURNE = ZoneInfo("Australia/Melbourne")   # DST-aware (AEST/AEDT)
 HISTORY_OLDEST = dt.date(2012, 1, 1)   # far enough back for full history
 JSON_BUDGET = 8500
 SEED_SECTION = "pb_seed"
@@ -297,10 +298,11 @@ def write_seed(items):
     doc_id = craft_document_id()
     blocks = []
     _walk(craft_get_blocks(doc_id), blocks)
+    # Post-then-delete (as coach.py): a failed post leaves the old seed in
+    # place; a failed delete is cleaned up by the next run.
     old = [b.get("id") for b in blocks
            if (_extract_json(b.get("markdown", "")) or {}).get("_section")
            == SEED_SECTION]
-    craft_delete(old)
     stamp = dt.datetime.now(MELBOURNE).isoformat(timespec="seconds")
     payload = {"_section": SEED_SECTION, "_part": 0, "_updated": stamp,
                "items": items}
@@ -315,6 +317,7 @@ def write_seed(items):
                        + "\n```", doc_id)
     else:
         craft_post("```json\n" + body + "\n```", doc_id)
+    craft_delete(old)
     print(f"pb_seed written: {len(items)} bars.")
 
 

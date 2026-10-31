@@ -31,7 +31,8 @@ Auth / config come from environment variables (see README):
 Optional:
   WINDOW_DAYS            forward window, default 14
   DRY_RUN                "1" to log actions without writing to intervals.icu
-  TZID                   IANA tz for interpreting all-day events, default
+  TZID                   IANA tz that defines "today" and the calendar
+                         window boundaries (GitHub runners are UTC), default
                          Australia/Melbourne
 """
 
@@ -43,6 +44,7 @@ import base64
 import hashlib
 import datetime as dt
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 import requests
 
@@ -119,9 +121,11 @@ def gcal_service():
 
 
 def read_calendar_window(svc, calendar_id: str, start: dt.date, end: dt.date):
-    """Return raw Google event dicts in [start, end)."""
-    time_min = dt.datetime.combine(start, dt.time.min).isoformat() + "Z"
-    time_max = dt.datetime.combine(end, dt.time.min).isoformat() + "Z"
+    """Return raw Google event dicts in [start, end), with the day
+    boundaries taken at local midnight in TZID (not UTC midnight)."""
+    tz = ZoneInfo(TZID)
+    time_min = dt.datetime.combine(start, dt.time.min, tz).isoformat()
+    time_max = dt.datetime.combine(end, dt.time.min, tz).isoformat()
     events, page_token = [], None
     while True:
         resp = svc.events().list(
@@ -383,7 +387,7 @@ def main() -> int:
     api_key = _env("INTERVALS_API_KEY")
     calendar_id = _env("GCAL_CALENDAR_ID")
 
-    today = dt.date.today()
+    today = dt.datetime.now(ZoneInfo(TZID)).date()   # local date, not UTC
     end = today + dt.timedelta(days=WINDOW_DAYS)
     log(f"[push] window {today} .. {end}  (dry_run={DRY_RUN})")
 
