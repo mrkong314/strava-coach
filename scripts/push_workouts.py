@@ -183,34 +183,42 @@ def should_push(ev, today: dt.date) -> bool:
     return looks_like_endurance_steps(desc)   # gate 2c: endurance step syntax
 
 
+_DISCIPLINE_WORDS = {
+    "ride": TYPE_RIDE, "bike": TYPE_RIDE, "cycle": TYPE_RIDE, "cycling": TYPE_RIDE,
+    "swim": TYPE_SWIM,
+    "run": TYPE_RUN,
+}
+
+
+def discipline_in(text: Optional[str]) -> Optional[str]:
+    """Workout type from the first discipline word in text, else None.
+
+    Scans whole words left to right, so "Run 15min off the bike" is a Run
+    and "Long ride 270min" is a Ride."""
+    for m in re.finditer(r'[a-z]+', (text or "").lower()):
+        wtype = _DISCIPLINE_WORDS.get(m.group(0))
+        if wtype:
+            return wtype
+    return None
+
+
 def infer_type(summary: str, description: str) -> str:
-    s = (summary or "").lower()
     d = (description or "").lower()
     if is_gym(summary, description):
         return TYPE_WEIGHTS
-    # The summary and the "Name:" line lead with the discipline ("Run - Brick
-    # 15min off the bike"). Trust that leading word before any keyword search,
-    # otherwise "bike" later in the text turns a run into a Ride.
-    for text in (s, (name_from_description(description) or "").lower()):
-        lead = text.split()[0].strip("-:") if text.split() else ""
-        if lead in ("ride", "bike", "cycle", "cycling"):
-            return TYPE_RIDE
-        if lead == "swim":
-            return TYPE_SWIM
-        if lead == "run":
-            return TYPE_RUN
+    # The "Name:" line in the description is the primary source; the calendar
+    # summary is the fallback when the name carries no discipline word
+    # (e.g. "Threshold 3x15 @100% + Z2").
+    wtype = discipline_in(name_from_description(description)) or discipline_in(summary)
+    if wtype:
+        return wtype
+    # Last resort: a description whose first line is a discipline header.
     first = d.strip().split()[0] if d.strip() else ""
-    if first == "ride" or "ride" in s or "bike" in s or "cycl" in s:
+    if first == "ride":
         return TYPE_RIDE
-    if first == "swim" or "swim" in s:
+    if first == "swim":
         return TYPE_SWIM
-    if first == "run" or "run" in s:
-        return TYPE_RUN
-    # endurance headers like "Warmup"/"Threshold" without a discipline word:
-    # fall back to the summary, else Run (XC context is running)
-    if "ride" in s or "bike" in s:
-        return TYPE_RIDE
-    if "run" in s:
+    if first == "run":
         return TYPE_RUN
     return TYPE_OTHER
 
