@@ -127,7 +127,8 @@ Separate pipeline for strength training, independent of `coach.py`. Two modes:
 
 - **pull** - reads completed workouts from Hevy and writes them into the Craft
   Training Log as a `detail_gym` JSON section (same chunked-codeblock mechanism
-  `coach.py` uses). Each item carries `routine_id` when the workout was started
+  `coach.py` uses). `date` is the Melbourne local date of the start time (Hevy
+  reports UTC). Each item carries `routine_id` when the workout was started
   from a routine. Dedup by workout id; only writes on new/changed data, so it
   is safe on a 30-min cron. `hevy_sync.py --mode pull`
 - **push** - reads gym events on the Workout Planning calendar (today to 28

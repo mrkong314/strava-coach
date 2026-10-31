@@ -152,6 +152,17 @@ def today_mel():
     return dt.datetime.now(MELBOURNE).date()
 
 
+def _workout_local_date(w):
+    """Melbourne date a Hevy workout started. Hevy start_time is UTC, so a
+    naive [:10] slice dates an early-morning session to the previous day."""
+    try:
+        return (dt.datetime.fromisoformat((w.get("start_time") or "")
+                                          .replace("Z", "+00:00"))
+                .astimezone(MELBOURNE).date())
+    except ValueError:
+        return None
+
+
 # --------------------------------------------------------------------------
 # Hevy API
 # --------------------------------------------------------------------------
@@ -466,9 +477,10 @@ def refresh_index(doc_id):
 
 def trim_workout(w):
     """Reduce a Hevy workout to the fields the Log needs for progression."""
+    local = _workout_local_date(w)
     out = {
         "id": w.get("id"),
-        "date": (w.get("start_time", "") or "")[:10],
+        "date": local.isoformat() if local else (w.get("start_time") or "")[:10],
         "title": w.get("title"),
         "updated_at": w.get("updated_at"),
         "exercises": [],
@@ -497,10 +509,12 @@ def trim_workout(w):
 
 
 def _workout_hash(item):
-    """Stable hash of the meaningful content, to detect edited workouts."""
+    """Stable hash of the meaningful content, to detect edited workouts.
+    Includes the stored date so a change in how it is derived propagates."""
     payload = json.dumps(item.get("exercises", []), sort_keys=True,
                          separators=(",", ":"))
-    return hashlib.sha1((payload + str(item.get("updated_at"))).encode()).hexdigest()[:12]
+    return hashlib.sha1((payload + str(item.get("updated_at"))
+                         + str(item.get("date"))).encode()).hexdigest()[:12]
 
 
 def run_pull():
@@ -578,16 +592,6 @@ def _event_date(ev):
         return (dt.datetime.fromisoformat(start["dateTime"].replace("Z", "+00:00"))
                 .astimezone(MELBOURNE).date())
     return None
-
-
-def _workout_local_date(w):
-    """Melbourne date a Hevy workout started (start_time is UTC)."""
-    try:
-        return (dt.datetime.fromisoformat((w.get("start_time") or "")
-                                          .replace("Z", "+00:00"))
-                .astimezone(MELBOURNE).date())
-    except ValueError:
-        return None
 
 
 def _routine_sig(routine):
