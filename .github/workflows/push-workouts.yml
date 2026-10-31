@@ -9,6 +9,10 @@ on:
         description: "Dry run (log actions, write nothing)"
         required: false
         default: "0"
+      past_days:
+        description: "Days back to reconcile owned workouts (raise once to tidy history)"
+        required: false
+        default: "7"
 
 # Avoid overlapping runs if one is slow.
 concurrency:
@@ -36,6 +40,7 @@ jobs:
           GCAL_CALENDAR_ID: ${{ secrets.GCAL_CALENDAR_ID }}
           GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
           WINDOW_DAYS: "14"
+          PAST_DAYS: ${{ github.event.inputs.past_days || '7' }}
           TZID: "Australia/Melbourne"
           DRY_RUN: ${{ github.event.inputs.dry_run }}
         run: python scripts/push_workouts.py

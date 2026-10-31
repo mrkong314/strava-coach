@@ -102,6 +102,17 @@ a discipline or step header (`Ride`, `Run`, `Swim`, `Warmup`, `Threshold`,
 ...). Reconciled prose (two or more of `ACTUAL`, `PLANNED`, `WELLNESS` in
 the head) is skipped.
 
+Today's events are pushed until they are completed: activities recorded in
+Intervals.icu today are counted per discipline group (VirtualRide counts as
+Ride, TrailRun as Run, and so on), and today's planned sessions of a group
+are dropped once the activity count reaches the planned count, so a double
+day stays planned until both sessions exist. The Intervals.icu read reaches
+`PAST_DAYS` back (default 7, `past_days` workflow input), so owned workouts
+on past or completed dates that Intervals.icu has not paired with an
+activity are deleted. Paired workouts are never updated or deleted, which
+keeps the planned-vs-actual comparison and stops planned load being counted
+again after completion.
+
 Each Intervals.icu workout is keyed by `external_id = wkplan-<sha1 of the
 Google event id>`, so the script only ever creates, updates, dedupes or
 deletes events it owns. Workout type comes from the first discipline word in
