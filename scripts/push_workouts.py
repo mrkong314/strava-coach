@@ -36,6 +36,7 @@ Optional:
 """
 
 import os
+import re
 import sys
 import json
 import base64
@@ -203,6 +204,23 @@ def infer_type(summary: str, description: str) -> str:
     return TYPE_OTHER
 
 
+def name_from_description(description: str) -> Optional[str]:
+    """Planned descriptions carry an explicit workout name.
+
+    Endurance events end with a "Name: <text>" line; gym events carry
+    "title=<text>" inside the [HEVY-ROUTINE] block. Returns None when neither
+    is present so the caller can fall back to the calendar summary."""
+    for line in (description or "").splitlines():
+        m = re.match(r'^\s*name\s*:\s*(.+?)\s*$', line, re.IGNORECASE)
+        if m:
+            return m.group(1)
+    for line in (description or "").splitlines():
+        m = re.match(r'^\s*title\s*=\s*(.+?)\s*$', line, re.IGNORECASE)
+        if m:
+            return m.group(1)
+    return None
+
+
 def external_id_for(ev) -> str:
     """Stable per calendar event. Google event ids are already unique; hash to
     keep length bounded and avoid odd characters."""
@@ -266,7 +284,7 @@ def build_payload(ev) -> dict:
         "category": "WORKOUT",
         "start_date_local": f"{d.isoformat()}T00:00:00",
         "type": wtype,
-        "name": summary,
+        "name": name_from_description(description) or summary,
         "description": description,
         "external_id": external_id_for(ev),
     }
