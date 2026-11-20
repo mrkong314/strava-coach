@@ -91,6 +91,7 @@ ID_TO_NAME = {
     "422B08F1": "Lateral Raise (Dumbbell)", "BE289E45": "Lateral Raise (Cable)",
     # vertical pull
     "1B2B1E7C": "Pull Up", "729237D1": "Pull Up (Weighted)", "29083183": "Chin Up",
+    "023943F1": "Chin Up (Weighted)",
     "6A6C31A5": "Lat Pulldown (Cable)", "473CF5B8": "Lat Pulldown (Machine)",
     # horizontal pull
     "55E6546F": "Bent Over Row (Barbell)", "D0C4A899": "Single Arm Cable Row",
@@ -104,6 +105,7 @@ ID_TO_NAME = {
     "C6C9B8A0": "Plank", "08590920": "Hanging Knee Raise", "F8356514": "Hanging Leg Raise",
     "23A48484": "Cable Crunch", "CC55119B": "Cable Pallof Press",
     "2982AA23": "Russian Twist (Weighted)", "99D5F10E": "Ab Wheel",
+    "D8911FC4": "Dead Bug",
 }
 
 # Bodyweight / reps-only / duration: push reps (or nothing), omit weight_kg.
@@ -117,6 +119,7 @@ REPS_ONLY_IDS = {
     "08590920",  # Hanging Knee Raise
     "F8356514",  # Hanging Leg Raise
     "C6C9B8A0",  # Plank (duration)
+    "D8911FC4",  # Dead Bug
 }
 
 # Heavy barbell compounds that get a warmup ramp on push: 2 warmup sets at
